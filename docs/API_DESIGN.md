@@ -8,7 +8,7 @@ endpoint và các quy tắc bảo mật. Đặc tả máy đọc được luôn 
 
 | Mục | Giá trị |
 | --- | --- |
-| Base URL (dev) | `http://127.0.0.1:8010` |
+| Base URL (dev) | `http://127.0.0.1:8014` |
 | Tiền tố API | `/api/v1` |
 | Tương thích ngược | `/api/...` được middleware viết lại thành `/api/v1/...` (không có trong OpenAPI) |
 | Kiểm tra sức khỏe | `GET /health` |
@@ -337,22 +337,22 @@ một hóa đơn và hỗ trợ header `Idempotency-Key`. Gửi lại cùng khó
 ### Đăng nhập và gọi danh sách có phân trang
 
 ```bash
-curl -X POST http://127.0.0.1:8010/api/v1/auth/login \
+curl -X POST http://127.0.0.1:8014/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@garage.vn","password":"Admin@123"}'
 
-curl "http://127.0.0.1:8010/api/v1/customers?q=Nguy%E1%BB%85n&page=1&page_size=10" \
+curl "http://127.0.0.1:8014/api/v1/customers?q=Nguy%E1%BB%85n&page=1&page_size=10" \
   -H "Authorization: Bearer <access_token>"
 ```
 
 ### Tạo hóa đơn và ghi nhận thanh toán
 
 ```bash
-curl -X POST http://127.0.0.1:8010/api/v1/invoices \
+curl -X POST http://127.0.0.1:8014/api/v1/invoices \
   -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
   -d '{"repair_order_id": 12}'
 
-curl -X POST http://127.0.0.1:8010/api/v1/payments \
+curl -X POST http://127.0.0.1:8014/api/v1/payments \
   -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
   -d '{"invoice_id": 3, "method": "Chuyển khoản", "amount": 500000}'
 ```
@@ -380,22 +380,22 @@ POST /api/v1/invoices
 
 ```bash
 # 1) Tạo khách hàng trùng số điện thoại -> 409 kèm danh sách hồ sơ khả nghi
-curl -X POST http://127.0.0.1:8010/api/v1/customers \
+curl -X POST http://127.0.0.1:8014/api/v1/customers \
   -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
   -d '{"name":"Nguyễn Minh Anh 2","phone":"090 123 4567"}'
 
 # 2) Chấp nhận trùng -> tạo mới
-curl -X POST "http://127.0.0.1:8010/api/v1/customers?allow_duplicate=true" \
+curl -X POST "http://127.0.0.1:8014/api/v1/customers?allow_duplicate=true" \
   -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
   -d '{"name":"Nguyễn Minh Anh 2","phone":"090 123 4567"}'
 
 # 3) Gắn xe đã có vào khách khác (cần xác nhận chuyển chủ)
-curl -X POST http://127.0.0.1:8010/api/v1/customers/3/vehicles/link \
+curl -X POST http://127.0.0.1:8014/api/v1/customers/3/vehicles/link \
   -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
   -d '{"vehicle_id": 12, "move": true, "note": "Khách mua lại xe"}'
 
 # 4) Tra cứu nhanh theo biển số/VIN trước khi nhập liệu
-curl "http://127.0.0.1:8010/api/v1/lookup?plate=51H-123.45" \
+curl "http://127.0.0.1:8014/api/v1/lookup?plate=51H-123.45" \
   -H "Authorization: Bearer <access_token>"
 ```
 

@@ -11,11 +11,11 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8012 --reload
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8014 --reload
 ```
 
-API chạy tại `http://127.0.0.1:8012`, Swagger tại `http://127.0.0.1:8012/docs`.
-Đường dẫn chuẩn của API là `/api/v1/...` (ví dụ `http://127.0.0.1:8012/api/v1/dashboard`).
+API chạy tại `http://127.0.0.1:8014`, Swagger tại `http://127.0.0.1:8014/docs`.
+Đường dẫn chuẩn của API là `/api/v1/...` (ví dụ `http://127.0.0.1:8014/api/v1/dashboard`).
 
 ### 2. Frontend
 
@@ -28,7 +28,7 @@ npm run dev -- --host 127.0.0.1
 
 Giao diện chạy tại `http://127.0.0.1:5173`.
 
-> Lưu ý: file `.env` phải có `VITE_API_URL=http://127.0.0.1:8012` để frontend gọi đúng backend.
+> Lưu ý: file `.env` phải có `VITE_API_URL=http://127.0.0.1:8014` để frontend gọi đúng backend.
 
 ### Chạy nhanh cả hai server (Windows)
 
@@ -36,7 +36,7 @@ Giao diện chạy tại `http://127.0.0.1:5173`.
 .\start.ps1
 ```
 
-Script sẽ khởi động backend ở cổng `8012` và frontend ở cổng `5173`, tự nạp lại backend khi thay đổi mã nguồn.
+Script sẽ khởi động backend ở cổng `8014` và frontend ở cổng `5173`. Nếu cần tự nạp lại backend khi thay đổi mã nguồn, chạy lệnh backend ở mục 1 với `--reload`.
 
 ### Tài khoản dùng thử
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8010';
+const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8014';
 type Case = { id: number; status: 'draft' | 'published'; customer_symptoms: string;
   inspection_findings: string; confirmed_cause: string; work_done: string; outcome: string;
   vehicle_make: string; vehicle_model: string; vehicle_year: number | null; engine_code: string;

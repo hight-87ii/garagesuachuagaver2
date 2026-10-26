@@ -1,4 +1,4 @@
-# Start ThreeH Workshop backend (8014) and frontend (5173)
+# Start GarageAI backend (8014) and frontend (5173)
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 $backend = Get-NetTCPConnection -LocalPort 8014 -State Listen -ErrorAction SilentlyContinue

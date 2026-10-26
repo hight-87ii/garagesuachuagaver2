@@ -3,7 +3,7 @@ import { CircleAlert, Plus, Trash2, X } from 'lucide-react';
 
 type Rule = { make: string; model: string; year_from: string; year_to: string; variant: string; engine_code: string; fuel_type: string; note: string };
 const empty = (): Rule => ({ make: '', model: '', year_from: '', year_to: '', variant: '', engine_code: '', fuel_type: '', note: '' });
-const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8010';
+const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8014';
 
 export default function PartFitmentsModal({ part, onClose }: { part: { id: number; name: string; code: string }; onClose: () => void }) {
   const [rules, setRules] = useState<Rule[]>([]);

@@ -6,7 +6,7 @@ import AISourceReferences from './AISourceReferences';
 
 type Vehicle = { id: number; make: string; model: string; plate: string; fuel_type?: string };
 type User = { id: number; role: string };
-const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8010';
+const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8014';
 function savedConversationId(userId:number){try{return Number(localStorage.getItem(`garage_ai_conversation_${userId}`))||null}catch{return null}}
 
 function AssistantAppointmentItems({items,vehicleId,onAdd}:{items:NonNullable<AIResult['suggested_items']>;vehicleId:string;onAdd:(selection:AppointmentSelection)=>void}){

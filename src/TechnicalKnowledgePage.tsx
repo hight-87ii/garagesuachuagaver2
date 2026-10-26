@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FileText, Plus, Search, SlidersHorizontal, X } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8010';
+const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8014';
 type SafetyLevel = 'low' | 'medium' | 'high' | 'critical';
 type Article = { id: number; title: string; symptoms: string; source_name: string; source_url: string;
   document_version: string; vehicle_make: string; vehicle_model: string; year_from: number | null;

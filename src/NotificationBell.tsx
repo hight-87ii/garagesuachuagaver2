@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bell, CalendarDays, CircleAlert, ClipboardList, Package, ReceiptText, RefreshCw, X } from 'lucide-react';
 
 type Notice = { id: string; title: string; description: string; page: string; kind: string };
-const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8010';
+const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8014';
 const icons = { appointment: CalendarDays, repair: ClipboardList, invoice: ReceiptText, part: Package };
 
 export default function NotificationBell({ userId, onNavigate }: { userId: number; onNavigate: (page: string) => void }) {
