@@ -1,0 +1,11 @@
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+*.db
+*.db-shm
+*.db-wal
+.env
+*.tsbuildinfo
+.agents/
+.opencode/
