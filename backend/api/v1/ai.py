@@ -26,12 +26,16 @@ from ...repair_knowledge import search_repair_cases
 from ...repair_history_analysis import build_history_analysis, enrich_history_context, render_history_summary
 from ...timeutil import VN_TZ
 from ...invoice_query import answer_invoice_question
-from ...inventory_query import answer_inventory_question, is_inventory_question
+from ...inventory_query import (answer_inventory_question, answer_part_price_question,
+                                is_inventory_question)
+from ...permissions import has_permission
 from ...vehicle_chat import customer_vehicles_reply
 from ...schemas.ai import (AIRequest, AIResultOut, AssistantChatIn, InvoiceQueryIn,
                            ServiceExplanationIn, ServiceFollowUpIn, VehicleHistorySummaryIn)
 
 router = APIRouter(prefix="/ai", tags=["AI Services"])
+
+_INDICATOR = r"\b(?:xi\s*nhanh?|si\s*nhan|den bao re)\b"
 
 
 def _garage_hours_reply(question: str) -> tuple[AIResult | None, list[dict]]:
@@ -153,12 +157,26 @@ def _catalog_service_reply(db, question: str, history: list[dict] | None = None)
 def _is_technical_question(question: str) -> bool:
     """Nhận diện câu hỏi kiến thức xe, kể cả câu hỏi rộng chưa nêu triệu chứng."""
     text = ai_service._normalize_vi(question)
-    symptom_phrases = ("loc coc", "coc coc", "ken ket", "keu rit", "tieng nghien",
-                        "rung", "giat", "lech lai", "nhao lai", "keo ve mot ben",
+    if re.search(_INDICATOR, text) and any(term in text for term in (
+            "chap chon", "khong on dinh", "khong sang", "luc bat", "nguyen nhan", "kiem tra")):
+        return True
+    if re.search(r"\blop\b", text) and re.search(r"\b(an lech|mon lech|mon khong deu)\b", text):
+        return True
+    symptom_phrases = ("loc coc", "coc coc", "ken ket", "keu rit", "rit rit", "tieng rit",
+                       "tieng nghien", "mat bam", "bam duong", "truot toc do cao",
+                       "bi truot", "truot banh", "truot xe",
+                       "rung", "giat", "lech lai", "nhao lai", "keo ve mot ben",
                         "khong lanh", "khong mat", "kho no", "khong no", "kho de",
                         "de khong", "de may cham", "tach tach", "check engine", "den ca vang",
                         "den dong co", "qua nhiet", "nong may", "nhiet do dong co")
     if any(phrase in text for phrase in symptom_phrases):
+        return True
+    if re.search(r"\b(lop|phanh|dong co|may|vo lang)\b", text) and any(
+            term in text for term in ("mon", "keu", "rit", "truot", "mat bam", "bam duong",
+                                     "toc do cao", "nong", "rung", "kiem tra", "nguyen nhan")):
+        return True
+    if any(term in text for term in ("troi mua", "di mua", "sau mua")) and any(
+            term in text for term in ("lai xe", "xe", "kiem tra", "an toan")):
         return True
     # Câu hỏi rộng cần có ngữ cảnh xe VÀ chủ đề kỹ thuật; không bắt 'mua' đơn
     # lẻ vì nó cũng có thể là 'mua phụ tùng'.
@@ -171,20 +189,183 @@ def _is_technical_question(question: str) -> bool:
     return bool(vehicle and topic)
 
 
-def _technical_references(db, question: str, vehicle=None) -> tuple[list[dict], list[dict]]:
+def _technical_route(question: str, history: list[dict] | None = None,
+                     *, allow_semantic: bool = True) -> tuple[str, AIResult | None, bool]:
+    """Làm rõ ý định trước khi đòi nguồn; lịch sử chat chỉ để hiểu câu trả lời nối tiếp."""
+    text = ai_service._normalize_vi(question).strip(" ?.!\n")
+    previous = None
+    turns = history or []
+    indicator = _INDICATOR
+    # Chỉ liên hệ câu nói rút gọn với xi nhan khi lượt trước thật sự nói về nó.
+    indicator_context = False
+    if len(turns) >= 2 and turns[-1].get("role") == "assistant":
+        indicator_context = bool(any(re.search(indicator, ai_service._normalize_vi(str(t.get("text") or "")))
+            for t in turns[-6:-1] if t.get("role") == "user")
+            and re.search(indicator, ai_service._normalize_vi(str(turns[-1].get("text") or ""))))
+    if (indicator_context and not re.search(indicator, text) and re.search(
+            r"\b(nguyen nhan|tai sao|vi sao|kiem tra|ben trai|ben phai|ca hai ben)\b", text)
+            and not re.search(r"\b(gia|chi phi|ton kho|lich su|hoa don|dat lich)\b", text)):
+        previous_indicator = next((str(t.get("text") or "")[:120] for t in reversed(turns[-6:-1])
+            if t.get("role") == "user" and re.search(indicator,
+                ai_service._normalize_vi(str(t.get("text") or "")))), "")
+        previous_symptom = ai_service._normalize_vi(previous_indicator)
+        topic = previous_indicator if re.search(r"\b(chap chon|luc|khong sang)\b", previous_symptom) else "Xi nhan"
+        question = f"{topic}: {question}"
+        text = ai_service._normalize_vi(question).strip(" ?.!\n")
+    indicator_mentioned = bool(re.search(indicator, text))
+    symptom = bool(re.search(r"\b(chap chon|khong on dinh|bat thuong|bi hong|khong sang|"
+                             r"khong nhay|khong hoat dong)\b", text)
+                   or re.search(r"\bluc\b.{0,35}\bluc\b", text)
+                   or re.search(r"\bluc\b.{0,35}\bkhong\b", text))
+    business = bool(re.search(r"\b(gia|chi phi|bao gia|ton kho|lich su|hoa don|"
+                              r"dat lich|bao hanh|phu tung)\b", text))
+    knowledge = bool(re.search(r"\b(la gi|hoat dong|nguyen nhan|do dau|"
+                               r"cach kiem tra|tai sao|vi sao)\b", text))
+    if (indicator_mentioned or indicator_context) and symptom and not business and not knowledge:
+        side_known = bool(re.search(r"\b(ben trai|ben phai|ca hai ben)\b", text))
+        light_known = "canh bao nguy hiem" in text or "hazard" in text
+        detail = ("Đèn xi nhan bên đó ở phía trước, phía sau hay cả hai không sáng?" if side_known else
+                  "Xi nhan bên trái, bên phải hay cả hai bên hoạt động chập chờn?")
+        if not light_known:
+            detail += " Đèn cảnh báo nguy hiểm có gặp tình trạng tương tự không?"
+        detail += " Bạn muốn kiểm tra nguyên nhân trước hay đã xác định cần thay phụ tùng?"
+        detail += (" Nên dừng xe ở nơi an toàn nếu người khác khó nhận biết hướng rẽ; "
+                   "hãy kiểm tra sớm, chưa thể xác định nguyên nhân khi chưa kiểm tra xe.")
+        return question, AIResult(detail, "clarification", "local", ai_service.model, True), False
+    if len(turns) >= 2 and turns[-1].get("role") == "assistant":
+        last_user = next((str(t.get("text") or "") for t in reversed(turns[:-1])
+                          if t.get("role") == "user"), "")
+        if ai_service._normalize_vi(last_user).strip(" ?.!\n") in (
+                "troi mua", "xe di mua", "lop mon") and any(
+                term in ai_service._normalize_vi(str(turns[-1].get("text") or ""))
+                for term in ("ban muon", "lop mon", "di mua")):
+            previous = last_user
+    # Không ghép chủ đề cũ vào câu hỏi nghiệp vụ hoặc câu hỏi đã nêu chủ đề mới.
+    if previous and not any(term in text for term in (
+            "gia", "chi phi", "lich su", "hoa don", "dat lich", "ton kho", "garage")):
+        old = ai_service._normalize_vi(previous).strip(" ?.!\n")
+        if old == "lop mon" and "lop" not in text:
+            question = f"Lốp mòn {question}"
+        elif old in ("troi mua", "xe di mua") and not any(term in text for term in ("mua", "lop", "phanh", "dong co")):
+            question = f"Xe đi mưa: {question}"
+        text = ai_service._normalize_vi(question).strip(" ?.!\n")
+    clarifications = {
+        "troi mua": "Bạn muốn tìm hiểu lưu ý khi lái xe trời mưa hay xe có dấu hiệu bất thường sau khi đi mưa?",
+        "xe di mua": "Bạn muốn biết cách lái xe an toàn trong mưa, kiểm tra xe sau khi đi mưa hay xe đang có dấu hiệu bất thường?",
+        "lop mon": "Bạn muốn tìm hiểu nguyên nhân lốp mòn hay cách kiểm tra độ mòn? Lốp mòn đều hay lệch một bên?",
+        "lop": "Bạn muốn xem giá lốp, hỏi về tình trạng lốp xe hay cần tư vấn thay lốp? Nếu muốn tra giá, bạn có kích thước ghi trên hông lốp không?",
+        "lop xe": "Bạn muốn xem giá lốp, hỏi về tình trạng lốp xe hay cần tư vấn thay lốp? Nếu muốn tra giá, bạn có kích thước ghi trên hông lốp không?",
+        "vo xe": "Bạn muốn xem giá lốp, hỏi về tình trạng lốp xe hay cần tư vấn thay lốp? Nếu muốn tra giá, bạn có kích thước ghi trên hông lốp không?",
+        "vo xe oto": "Bạn muốn xem giá lốp, hỏi về tình trạng lốp xe hay cần tư vấn thay lốp? Nếu muốn tra giá, bạn có kích thước ghi trên hông lốp không?",
+    }
+    if text in clarifications:
+        return question, AIResult(clarifications[text], "clarification", "local", ai_service.model, True), False
+    if re.search(r"\bxe nong (?:bat thuong|qua)\b", text) and not re.search(
+            r"\b(gia|chi phi|lich su|hoa don|ton kho)\b", text):
+        return question, AIResult("Bạn thấy đồng hồ nhiệt độ động cơ tăng cao hay chỉ cảm thấy khoang xe nóng? "
+            "Nếu xe báo quá nhiệt, hãy dừng ở nơi an toàn và tắt máy để kiểm tra.",
+            "clarification", "local", ai_service.model, True), False
+    if _is_technical_question(question):
+        return question, None, False
+    # Ngữ nghĩa bổ sung cho cách diễn đạt không nằm trong quy tắc ổn định. Không cho
+    # model phân loại lại yêu cầu giá/hồ sơ/quyền truy cập hoặc tự tạo nguồn.
+    if (allow_semantic and ai_service._enabled and re.search(r"\b(xe|oto|o to|lop|phanh|dong co)\b", text)
+            and not any(term in text for term in (
+                "gia", "chi phi", "lich su", "hoa don", "dat lich", "ton kho", "phu tung",
+                "bao hanh", "khach hang", "garage", "gara"))):
+        try:
+            raw = ai_service._chat([
+                {"role": "system", "content":
+                 "Phân loại ý định câu hỏi ô tô. Chỉ trả JSON object có trường kind, một trong: "
+                 "technical (kiến thức kỹ thuật đủ rõ), ambiguous (ô tô nhưng chưa rõ nhu cầu), "
+                 "symptom (triệu chứng xe cụ thể), business (dữ liệu garage), other (ngoài phạm vi). "
+                 "Không đưa ra câu trả lời hay suy đoán tình trạng xe."},
+                {"role": "user", "content": json.dumps({"question": question,
+                    "history": turns[-4:]}, ensure_ascii=False)},
+            ])
+            kind = json.loads(raw).get("kind")
+            if kind == "ambiguous":
+                return question, AIResult("Bạn muốn tìm hiểu điều gì về tình huống này trên xe: "
+                    "cách kiểm tra, lưu ý sử dụng hay dấu hiệu bất thường cụ thể?",
+                    "clarification", "local", ai_service.model, True), False
+            if kind in ("technical", "symptom"):
+                return question, None, True
+        except Exception:
+            pass  # Provider lỗi/sai định dạng: không mở khóa trả lời thiếu nguồn.
+    return question, None, False
+
+
+def _general_knowledge_question(question: str) -> bool:
+    """Chỉ mở nhánh không nguồn cho yêu cầu kiến thức rõ, không chứa dữ kiện riêng/giá."""
+    text = ai_service._normalize_vi(question)
+    if (ai_service._flood_intent(question, []) or ai_service._urgent_guidance(question, ai_service.model)
+            or re.search(r"\b(gia|bao gia|chi phi|ton kho|hoa don|lich hen|bao hanh|"
+                         r"khach hang|garage|gara|phu tung|bien so|vin)\b", text)
+            or any(term in text for term in ("thay het bao nhieu", "sua het bao nhieu"))
+            or any(phrase in text for phrase in (
+                "xe toi", "xe cua toi", "xe minh", "xe cua minh", "xe nay",
+                "xe cua khach", "da sua", "tung sua", "ho so", "cua toi"))):
+        return False
+    automotive = re.search(r"\b(xe|oto|o to|lop|phanh|abs|turbo|dong co|may|thay dau|xi nhan|si nhan|den bao re|"
+                            r"vo lang|hop so|gat mua)\b", text)
+    if re.search(r"\b(di|lai)\s+(?:xe\s+)?(?:troi\s+)?mua\b", text):
+        automotive = True
+    knowledge = any(phrase in text for phrase in (
+        "la gi", "the nao", "hoat dong", "nguyen nhan", "do dau", "co the do",
+        "can luu y", "luu y gi", "chu y gi", "dau hieu", "co nguy hiem",
+        "khi nao can", "nen lam gi", "cach kiem tra", "cach lai"))
+    return bool(automotive and knowledge)
+
+
+def _technical_references(db, question: str, vehicle=None, *, semantic_technical: bool = False) -> tuple[list[dict], list[dict]]:
     """Tra nguồn cho câu hỏi kỹ thuật; an toàn/giá/lịch sử đi luồng riêng."""
     text = ai_service._normalize_vi(question)
     if (ai_service._flood_intent(question, []) or ai_service._urgent_guidance(question, ai_service.model)
-             or re.search(r"\bgia\b", text)
-             or any(term in text for term in ("bao nhieu tien", "lich su", "da sua",
+              or re.search(r"\bgia\b", text)
+              or any(term in text for term in ("bao nhieu tien", "thay het bao nhieu", "sua het bao nhieu",
+                                                 "lich su", "da sua",
                                                 "tung sua", "bao hanh", "dia chi", "hotline",
                                                 "bao lau", "phu tung", "linh kien", "phu kien"))):
         return [], []
-    if not _is_technical_question(question):
+    if not semantic_technical and not _is_technical_question(question):
         return [], []
     selected = dict(vehicle) if vehicle else None
-    cases = search_repair_cases(db, question, selected, limit=1)
-    articles = [*cases, *search_technical(db, question, limit=2 if cases else 3, vehicle=selected)]
+    indicator_query = bool(re.search(_INDICATOR, text))
+    # Mở rộng truy vấn tìm kiếm, không sửa câu hỏi gốc hoặc chỉ mục embedding.
+    tire_question = bool(re.search(r"\b(lop|vo xe)\b", text))
+    tire_wear = bool(tire_question and any(term in text for term in (
+        "an lech", "mon lech", "mon khong deu", "lop mon")))
+    tire_noise = bool(tire_question and any(term in text for term in (
+        "rit", "ken ket", "tieng nghien")))
+    tire_slip = bool(tire_question and any(term in text for term in (
+        "truot", "mat bam", "bam duong", "toc do cao")))
+    intermittent = indicator_query and bool(re.search(r"\b(chap chon|khong on dinh|luc|bat tat|khong sang)\b", text))
+    unstable = (indicator_query and "nhay nhanh" not in text and
+                bool(re.search(r"\b(chap chon|khong on dinh|luc|bat tat)\b", text)))
+    lookup = ("xi nhan chap chon den bao re luc sang luc khong" if unstable else
+              re.sub(_INDICATOR, "xi nhan", text) if indicator_query else
+              "lốp mòn không đều mòn lệch một bên" if tire_wear else
+              "lốp rít tiếng rít tiếng nghiến" if tire_noise else
+              "lốp mất độ bám trượt ở tốc độ cao" if tire_slip else question)
+    cases = search_repair_cases(db, lookup, selected, limit=1)
+    articles = [*cases, *search_technical(db, lookup, limit=2 if cases else 3, vehicle=selected)]
+    def evidence_text(article):
+        return ai_service._normalize_vi(" ".join((str(article.get("title") or ""),
+            str(article.get("symptoms") or ""),
+            *(str(hit.get("content") or "") for hit in article.get("excerpts") or []))))
+    if indicator_query:
+        def relevant(article):
+            content = evidence_text(article)
+            return bool(re.search(_INDICATOR, content) and (not intermittent or re.search(
+                r"\b(chap chon|khong on dinh|luc|bat tat|khong sang)\b", content)))
+        articles = [article for article in articles if relevant(article)]
+    # FTS OR chỉ khớp "phanh" với bài phanh ướt không đủ trả lời tiếng kêu.
+    if re.search(r"\bphanh\b", text) and re.search(r"\b(keu|rit|loc coc)\b", text):
+        articles = [article for article in articles if re.search(r"\b(keu|tieng|rit|loc coc)\b",
+            evidence_text(article))]
+    if re.search(r"\b(?:di|lai)\s+(?:xe\s+)?(?:troi\s+)?mua\b|\btroi mua lai xe\b", text):
+        articles = [article for article in articles if re.search(
+            r"\b(lai|toc do|quan sat|tam nhin|khoang cach|duong tron)\b", evidence_text(article))]
     sources = [{"type": "technical_article", "id": article["id"],
                 "label": (f"{'Ca thực tế đã duyệt (tham khảo)' if article.get('source_type') == 'repair_case' else 'Kiến thức kỹ thuật'}: {article['title']} · {article['source_name']}" +
                           (f" · phiên bản {article['document_version']}" if article["document_version"] else "") +
@@ -198,6 +379,76 @@ def _technical_references(db, question: str, vehicle=None) -> tuple[list[dict], 
         if article.get("source_type") == "repair_case":
             source["type"] = "repair_case"
     return articles, sources
+
+
+def _indicator_replacement_reply(db, question: str, vehicle, parts: list[dict], user: dict,
+                                 history: list[dict] | None = None) -> tuple[AIResult, list[dict]] | None:
+    """Tư vấn thay thế chỉ từ xe đã xác thực, quy tắc lắp vừa và danh mục đang hoạt động."""
+    text = ai_service._normalize_vi(question)
+    turns = history or []
+    direct = bool(re.search(_INDICATOR, text) and re.search(r"\b(thay|doi|lap)\b", text))
+    last_assistant = ai_service._normalize_vi(str(turns[-1].get("text") or "")) if turns and turns[-1].get("role") == "assistant" else ""
+    previous_request = any(t.get("role") == "user" and re.search(_INDICATOR, ai_service._normalize_vi(str(t.get("text") or "")))
+        and re.search(r"\b(thay|doi|lap)\b", ai_service._normalize_vi(str(t.get("text") or ""))) for t in turns[-6:-1])
+    continuation = (previous_request and "xi nhan" in last_assistant and
+                    bool(re.search(r"\b(trai|phai|truoc|sau|ca hai)\b", text)) and
+                    not re.search(r"\b(gia|chi phi|ton kho|lich su|hoa don|lich hen)\b", text))
+    if not direct and not continuation:
+        return None
+    def clarify(message: str):
+        return AIResult(message, "clarification", "local", ai_service.model, True), []
+    if not vehicle:
+        return clarify("Bạn hãy chọn đúng xe trong hồ sơ để garage đối chiếu xi nhan và quyền sở hữu trước khi tư vấn thay thế.")
+    combined = " ".join([str(t.get("text") or "") for t in turns[-6:] if t.get("role") == "user"] + [question]) if continuation else question
+    normalized = ai_service._normalize_vi(combined)
+    sides = [side for side in ("trai", "phai") if re.search(rf"\b{side}\b", normalized)]
+    positions = [pos for pos in ("truoc", "sau") if re.search(rf"\b{pos}\b", normalized)]
+    if len(sides) != 1:
+        return clarify("Bạn cần thay xi nhan bên trái hay bên phải? Nếu cả hai bên, vui lòng nói rõ từng vị trí để đối chiếu phụ tùng.")
+    if len(positions) != 1:
+        return clarify(f"Xi nhan bên {sides[0]} cần thay ở phía trước hay phía sau? Cần xác định vị trí trước khi tra mã phụ tùng.")
+    info = dict(vehicle)
+    candidates = []
+    for part in parts:
+        name = ai_service._normalize_vi(str(part.get("name") or ""))
+        if (not re.search(_INDICATOR, name) or
+            not re.search(rf"\b{sides[0]}\b", name) or
+            not re.search(rf"\b{positions[0]}\b", name)):
+            continue
+        if part.get("fitments") and ai_service._part_fit_level(part, info) == 3:
+            candidates.append(part)
+    if len(candidates) != 1:
+        return clarify("Chưa có đúng một mã xi nhan khớp vị trí và quy tắc lắp vừa đã xác minh cho xe này. "
+                       "Vui lòng hỏi cố vấn dịch vụ đối chiếu VIN và mã phụ tùng; không nên đặt thay chỉ theo triệu chứng.")
+    part = candidates[0]
+    sources = [{"type": "part", "id": part["id"], "label": f"Danh mục phụ tùng: {part['name']} ({part['code']})"}]
+    amount = part.get("sell_price")
+    answer = (f"Danh mục ghi {part['name']} ({part['code']}) khớp quy tắc lắp vừa của xe đã chọn. "
+              "Vẫn cần đối chiếu VIN và kiểm tra thực tế trước khi quyết định thay. ")
+    if has_permission(user.get("role", ""), "inventory.view") and has_permission(user.get("role", ""), "inventory.view_all"):
+        answer += f"Tồn kho ghi nhận: {part['stock']} {part['unit']} (chưa giữ hàng). "
+    else:
+        answer += "Tình trạng hàng cần nhân viên xác nhận; tài khoản này không có quyền xem tồn kho chi tiết. "
+    if not amount:
+        return AIResult(answer + "Chưa có giá bán được xác nhận; cần cố vấn dịch vụ lập báo giá.",
+                        "no_data", "local", ai_service.model, True, ["Giá phụ tùng"]), sources
+    answer += f"Giá phụ tùng tham khảo: {int(amount):,} ₫/{part['unit']}. ".replace(",", ".")
+    if has_permission(user.get("role", ""), "inventory.view") and not part.get("stock"):
+        return AIResult(answer + "Chưa thể lập ước tính thay thế khi chưa xác nhận khả năng cung ứng. "
+                        "Vui lòng hỏi cố vấn dịch vụ về hàng và báo giá chính thức.",
+                        "no_data", "local", ai_service.model, True, ["Khả năng cung ứng"]), sources
+    services = [dict(row) for row in db.execute(
+        "SELECT id,name,price FROM services WHERE active=1 ORDER BY id")
+        if ai_service._normalize_vi(row["name"]).strip() in ("thay xi nhan", "thay den bao re")]
+    if len(services) == 1 and services[0]["price"]:
+        service = services[0]
+        sources.append({"type": "service", "id": service["id"], "label": f"Danh mục dịch vụ: {service['name']}"})
+        answer += (f"Giá công {service['name']}: {int(service['price']):,} ₫; "
+                   f"cộng hai hạng mục tham khảo: {int(amount) + int(service['price']):,} ₫. ").replace(",", ".")
+        answer += "Chưa gồm phát sinh hoặc thuế; báo giá chính thức cần nhân viên kiểm tra và xác nhận."
+    else:
+        answer += "Chưa có giá công thay xi nhan được xác nhận, nên chưa thể tính tổng; hãy nhờ cố vấn dịch vụ lập báo giá chính thức."
+    return AIResult(answer, "fallback", "local", ai_service.model), sources
 
 
 @router.get("/knowledge/search")
@@ -341,10 +592,16 @@ def _assistant_sources(db, question: str, answer: str, vehicle, context, parts, 
 def _assistant_appointment_items(db, answer: str, sources: list[dict], parts: list[dict]) -> list[dict]:
     """Chỉ đưa ID danh mục thật có bằng chứng trong câu trả lời, không tin ID do LLM tạo."""
     part_ids = {source["id"] for source in sources if source["type"] == "part"}
+    approved = {row["part_id"] for row in db.execute(
+        """SELECT a.part_id FROM part_price_approvals a
+           JOIN parts p ON p.id=a.part_id
+           WHERE p.active=1 AND p.sell_price=a.approved_sell_price""").fetchall()} if db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='part_price_approvals'").fetchone() else set()
     candidates = [{"kind": "part", "id": part["id"], "name": part["name"],
-                   "price": part["sell_price"],
-                   "availability": "Đang có hàng" if part["stock"] > 0 else "Tạm hết hàng"}
-                  for part in parts if part["id"] in part_ids]
+                    "price": part["sell_price"],
+                    "availability": "Đang có hàng" if part["stock"] > 0 else "Tạm hết hàng"}
+                   for part in parts if part["id"] in part_ids and part["id"] in approved
+                   and not part["code"].upper().startswith("DEMO-")]
     normalized = ai_service._normalize_vi(answer)
     for service in db.execute("SELECT id,name,price FROM services WHERE active=1 ORDER BY name").fetchall():
         if ai_service._normalize_vi(service["name"]) in normalized:
@@ -355,138 +612,21 @@ def _assistant_appointment_items(db, answer: str, sources: list[dict], parts: li
 
 @router.post("/assistant/chat", response_model=AIResultOut, response_model_exclude_none=True)
 def assistant_chat(item: AssistantChatIn, user: dict = Depends(require_permission("dashboard"))) -> dict:
-    """Hội thoại chỉ đọc: dữ liệu xe theo chủ sở hữu, chỉ cấp trường danh mục cần cho tra cứu."""
-    if item.vehicle_id and item.plate:
-        raise BadRequestError("Chỉ chọn một xe hoặc nhập một biển số")
+    """Legacy transport: client history is untrusted language context only."""
+    from ...chat_pipeline import answer_chat
     started = time.perf_counter()
-    with connect() as db, transaction(db):
-        visit_reply = answer_customer_visit_question(db, item.question, user)
-        if visit_reply is not None:
-            result = visit_reply.result
-            _audit_ai(db, user, "other", "repair_orders", "all", result,
-                      {"question": item.question}, int((time.perf_counter() - started) * 1000))
-            return {"result": result.content, "status": result.status, "is_draft": False,
-                    "no_data": result.no_data, "missing_data": result.missing_data,
-                    "source_count": len(visit_reply.sources), "sources": visit_reply.sources,
-                    "suggested_items": [], "analytics": visit_reply.analytics}
-        # Deny before reading any protected vehicle/parts data.
-        early_inventory = (answer_inventory_question(db, item.question, user)
-                           if is_inventory_question(item.question) else None)
-        if early_inventory and early_inventory[0].status == "denied":
-            write_audit(db, user, "ai.inventory.denied", "parts", None,
-                        {"reason": "permission"}, None)
-            return {"result": early_inventory[0].content, "status": "denied", "is_draft": False,
-                    "no_data": False, "sources": [], "source_count": 0, "missing_data": []}
-        vehicle = None
-        if item.vehicle_id or item.plate:
-            vehicle = db.execute(
-                "SELECT * FROM vehicles WHERE id=?" if item.vehicle_id else
-                "SELECT * FROM vehicles WHERE plate_normalized=? ORDER BY id LIMIT 1",
-                (item.vehicle_id if item.vehicle_id else normalize_plate(item.plate or ""),),
-            ).fetchone()
-            if not vehicle:
-                raise NotFoundError("Không tìm thấy xe")
-            ensure_record_access(db, user, vehicle["customer_id"])
-        context = _vehicle_context(db, vehicle, user.get("role") != "Khách hàng") if vehicle else None
-        if context:
-            # Chỉ thời lượng snapshot từ chứng từ của chính xe đã kiểm tra quyền.
-            estimate = db.execute(
-                """SELECT id,code,estimated_duration_min,'hóa đơn' source FROM invoices
-                   WHERE repair_order_id IN (SELECT id FROM repair_orders WHERE vehicle_id=?)
-                     AND status<>'Đã hủy' AND estimated_duration_min IS NOT NULL
-                   ORDER BY id DESC LIMIT 1""", (vehicle["id"],)
-            ).fetchone()
-            if not estimate:
-                estimate = db.execute(
-                    """SELECT id,code,estimated_duration_min,'báo giá đã duyệt' source FROM quotes
-                       WHERE repair_order_id IN (SELECT id FROM repair_orders WHERE vehicle_id=?)
-                         AND status='Đã duyệt' AND estimated_duration_min IS NOT NULL
-                       ORDER BY id DESC LIMIT 1""", (vehicle["id"],)
-                ).fetchone()
-            context["latest_work_estimate"] = dict(estimate) if estimate else None
-        # Tồn kho chỉ dùng trong nhánh tra cứu xác định tại backend; không gửi tới provider.
-        # Không cấp giá vốn và thông tin nhà cung cấp.
-        inventory_reply = (answer_inventory_question(db, item.question, user, dict(vehicle) if vehicle else None)
-                           if is_inventory_question(item.question) else None)
-        parts = [dict(row) for row in db.execute(
-            "SELECT id,code,name,category,compatible,unit,sell_price,stock FROM parts WHERE active=1 ORDER BY name"
-        ).fetchall()] if inventory_reply is None else []
-        rules = db.execute(
-            "SELECT part_id,make,model,year_from,year_to,variant,engine_code,fuel_type,note "
-            "FROM part_fitments ORDER BY id"
-        ).fetchall() if inventory_reply is None else []
-        rules_by_part: dict[int, list[dict]] = {}
-        for rule in rules:
-            rules_by_part.setdefault(rule["part_id"], []).append(dict(rule))
-        for part in parts:
-            part["fitments"] = rules_by_part.get(part["id"], [])
-        # Chỉ cấp thông tin liên hệ công khai; không gửi toàn bộ system_settings cho AI.
-        garage_info = _public_garage_info(db)
-        catalog_sources: list[dict] = []
-        load_reply = (answer_appointment_load(db, item.question, user) if not inventory_reply and is_load_question(item.question) else None)
-        dynamic_reply = None if inventory_reply or load_reply else answer_dynamic_query(db, item.question, user)
-        hours_reply = (None, []) if dynamic_reply is not None or inventory_reply or load_reply else _garage_hours_reply(item.question)
-        appointment_reply = (None if inventory_reply or load_reply or dynamic_reply is not None or hours_reply[0] is not None
-                             else pending_appointments_reply(db, item.question, user))
-        vehicle_reply = None if inventory_reply or load_reply or appointment_reply is not None or dynamic_reply is not None or hours_reply[0] is not None else customer_vehicles_reply(db, item.question, user)
-        invoice_answer = None if inventory_reply or load_reply or vehicle_reply is not None or appointment_reply is not None or dynamic_reply is not None or hours_reply[0] is not None else answer_invoice_question(db, user, item.question)
-        technical_articles: list[dict] = []
-        try:
-            if inventory_reply is not None:
-                result, catalog_sources = inventory_reply
-            elif load_reply is not None:
-                result, catalog_sources = load_reply
-            elif dynamic_reply is not None:
-                result, catalog_sources = dynamic_reply
-            elif hours_reply[0] is not None:
-                result, catalog_sources = hours_reply
-            elif invoice_answer is not None:
-                result = AIResult(invoice_answer["content"], invoice_answer["status"],
-                                  "local", ai_service.model,
-                                  invoice_answer["status"] == "no_data")
-                catalog_sources = invoice_answer["sources"]
-                appointment_reply = None
-            elif appointment_reply is not None:
-                result, catalog_sources = appointment_reply
-            elif vehicle_reply is not None:
-                result, catalog_sources = vehicle_reply
-            else:
-                result, catalog_sources = _catalog_service_reply(
-                    db, item.question, [turn.model_dump() for turn in item.history])
-            if result is None:
-                technical_articles, catalog_sources = _technical_references(db, item.question, vehicle)
-                result = (ai_service.answer_technical(item.question, technical_articles, user["role"])
-                          if technical_articles else ai_service.answer_assistant(item.question, context, parts,
-                          [turn.model_dump() for turn in item.history], user["role"], garage_info))
-            error_text = None
-        except Exception as exc:
-            error_text = str(exc)
-            result = AIResult("Chưa thể trả lời lúc này. Vui lòng thử lại hoặc hỏi nhân viên garage.",
-                              "error", "local", ai_service.model)
-        sources = (catalog_sources if inventory_reply is not None or load_reply is not None or dynamic_reply is not None or hours_reply[0] is not None or invoice_answer is not None or appointment_reply is not None or vehicle_reply is not None or technical_articles else
-                   _assistant_sources(db, item.question, result.content, vehicle, context, parts, garage_info)
-                   + catalog_sources)
-        # Hỏi làm rõ và hướng dẫn an toàn không khẳng định dữ kiện nghiệp vụ; không
-        # tự thêm lời dẫn thiếu nguồn lên trước chúng. Các khẳng định khác vẫn cần nguồn.
-        if (not sources and inventory_reply is None and load_reply is None and dynamic_reply is None and hours_reply[0] is None and appointment_reply is None and vehicle_reply is None and invoice_answer is None and
-                result.status not in ("error", "clarification", "safety")):
-            result = AIResult(
-                "Chưa đủ dữ liệu có nguồn phù hợp để xác nhận. " +
-                ("Vui lòng chọn xe hoặc hỏi cố vấn dịch vụ." if not vehicle else
-                 "Bạn muốn kiểm tra hạng mục nào?"),
-                "no_data", "local", ai_service.model, True, ["Nguồn dữ liệu phù hợp"],
-            )
-        suggested_items = (_assistant_appointment_items(db, result.content, sources, parts)
-                           if user["role"] == "Khách hàng" and sources and
-                           result.status not in ("error", "no_data", "clarification", "safety") else [])
-        _audit_ai(db, user, "other", "vehicle" if vehicle else "general",
-                  str(vehicle["id"]) if vehicle else "0", result,
-                  {"vehicle_id": vehicle["id"] if vehicle else None, "question": item.question},
-                  int((time.perf_counter() - started) * 1000), error_text)
-    return {"result": result.content, "status": result.status, "is_draft": True,
-            "no_data": result.no_data, "missing_data": result.missing_data,
-            "source_count": len(sources), "sources": sources,
-            "suggested_items": suggested_items}
+    output = answer_chat(item.question, user, vehicle_id=item.vehicle_id, plate=item.plate,
+                         history=[turn.model_dump() for turn in item.history])
+    if output.answer.status == "denied":
+        with connect() as db, transaction(db):
+            write_audit(db, user, "ai.inventory.denied", "parts", None, {"reason": "permission"}, None)
+    else:
+        with connect() as db, transaction(db):
+            _audit_ai(db, user, "other", "vehicle" if output.vehicle_id else "general",
+                      str(output.vehicle_id or 0), output.answer,
+                      {"vehicle_id": output.vehicle_id, "question": item.question},
+                      int((time.perf_counter() - started) * 1000))
+    return output.result
 
 
 def _audit_ai(db, user: dict, task: str, ref_type: str, ref_id: str, result: AIResult,
@@ -550,9 +690,15 @@ def _vehicle_context(db, vehicle, include_internal_notes: bool) -> dict:
             "repaired_at": row["repaired_at"], "mileage": row["mileage"],
             "services": services, "parts": parts, "technical_notes": notes,
         })
+    profile = db.execute("""SELECT engine_number,transmission,drivetrain,displacement_cc,power_kw,torque_nm,
+                                  fuel_consumption,fuel_tank_liters,tire_size,tire_pressure,
+                                  oil_capacity_liters,oil_spec
+                           FROM vehicle_profiles WHERE vehicle_id=?""", (vehicle["id"],)).fetchone()
     return {
         "vehicle": {key: vehicle[key] for key in ("id", "plate", "vin", "make", "model", "year",
-                                                "variant", "engine_code", "fuel_type", "mileage")},
+                                                 "variant", "engine_code", "fuel_type", "mileage")},
+        "technical_specs": {key: value for key, value in dict(profile).items() if value is not None}
+                           if profile else {},
         "history": history,
     }
 

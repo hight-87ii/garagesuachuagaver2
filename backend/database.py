@@ -65,7 +65,7 @@ SERVICES = [
     ("Thay dầu động cơ", "Bảo dưỡng", "Thay dầu động cơ và kiểm tra mức dung dịch", 450000, 45),
     ("Kiểm tra hệ thống phanh", "Sửa chữa", "Kiểm tra má phanh, đĩa phanh và hệ thống thủy lực", 350000, 60),
     ("Vệ sinh điều hòa", "Chăm sóc xe", "Vệ sinh lọc gió và khử mùi hệ thống điều hòa", 650000, 90),
-    ("Cân chỉnh bánh xe", "Gầm - lốp", "Cân bằng động và kiểm tra góc đặt bánh xe", 300000, 60),
+    ("Cân chỉnh bánh xe", "Lốp", "Cân bằng động và kiểm tra góc đặt bánh xe", 300000, 60),
     ("Kiểm tra tổng quát", "Kiểm tra", "Kiểm tra nhanh các hệ thống quan trọng của xe", 250000, 45),
 ]
 
@@ -85,7 +85,7 @@ EXTRA_SERVICES = [
     ("Vệ sinh họng gió", "Bảo dưỡng", "Vệ sinh họng ga/họng gió sau khi kỹ thuật viên kiểm tra", 450000, 60),
     ("Vệ sinh kim phun", "Bảo dưỡng", "Vệ sinh hệ thống phun nhiên liệu sau khi kiểm tra kỹ thuật", 480000, 90),
     ("Vệ sinh và căn chỉnh phanh", "Sửa chữa", "Vệ sinh cơ cấu phanh và kiểm tra căn chỉnh, chưa gồm phụ tùng", 640000, 90),
-    ("Đảo lốp", "Gầm - lốp", "Đảo vị trí bánh xe và kiểm tra áp suất", 220000, 45),
+    ("Đảo lốp", "Lốp", "Đảo vị trí bánh xe và kiểm tra áp suất", 220000, 45),
 ]
 
 PARTS = [
@@ -108,10 +108,10 @@ EXTRA_PARTS = [
     ("AC-CX5-2021", "Lọc gió điều hòa Mazda CX-5", "Điều hòa", "Mazda CX-5 2019-2022", "cái", 185000, 265000, 13, 5),
     ("BT-ACC-2022", "Ắc quy Hyundai Accent", "Điện - ắc quy", "Hyundai Accent 2020-2023", "bình", 1320000, 1690000, 5, 3),
     ("WP-CAM-2020", "Bộ gạt mưa Toyota Camry", "Chăm sóc xe", "Toyota Camry 2018-2022", "bộ", 240000, 350000, 8, 3),
-    ("SH-RAN-2021", "Giảm xóc sau Ford Ranger", "Gầm - lốp", "Ford Ranger 2019-2022", "cái", 1170000, 1490000, 3, 3),
+    ("SH-RAN-2021", "Giảm xóc sau Ford Ranger", "Gầm", "Ford Ranger 2019-2022", "cái", 1170000, 1490000, 3, 3),
     ("COOL-LL-01", "Nước làm mát động cơ loại dài hạn 1L", "Dung dịch", "Toyota, Mazda, Hyundai, Ford, Kia", "chai", 140000, 210000, 20, 6),
     ("SP-SEL-2022", "Bộ bugi Kia Seltos", "Động cơ", "Kia Seltos 2020-2023", "bộ", 580000, 780000, 7, 3),
-    ("AC-CRV-2019", "Lọc gió điều hòa Honda CR-V", "Điều hòa", "Honda CR-V 2017-2020", "cái", 200000, 285000, 0, 3),
+    ("AC-CRV-2019", "Lọc gió điều hòa Honda CR-V", "Điều hòa", "Honda CR-V 2017-2020", "cái", 200000, 285000, 5, 3),
     ("AF-XPA-2023", "Lọc gió động cơ Mitsubishi Xpander", "Lọc - dầu", "Mitsubishi Xpander 2022-2024", "cái", 190000, 275000, 10, 4),
 ]
 
@@ -190,7 +190,7 @@ def seed_demo_data(db) -> None:
             (customer_id("097 220 6631"), "29A-778.90", "Ford", "Ranger", 2018, None, 88400),
             (customer_id("090 664 8890"), "50H-334.55", "Mitsubishi", "Xpander", 2023, None, 15200),
             (customer_id("098 611 2233"), "20A-246.81", "Toyota", "Vios", 2020, "RL4BT9F35LZ012481", 46820),
-            (customer_id("097 522 3344"), "20C-189.56", "Ford", "Ranger", 2021, "MNCLMFF80MW123456", 61240),
+            (customer_id("097 522 3344"), "20C-189.56", "Ford", "Ranger", 2021, "MNCLMFF80MW123456", 45400),
             (customer_id("096 433 4455"), "20A-735.92", "Hyundai", "Accent", 2022, "KMHCT41DANU345678", 28750),
         ]
         for owner, plate, make, model, year, vin, mileage in vehicles:
@@ -228,6 +228,7 @@ def seed_demo_data(db) -> None:
             "VALUES(?, ?, ?, ?, ?, 1)",
             EXTRA_SERVICES,
         )
+        from .catalog_expansion import seed_expanded_catalog
 
         if db.execute("SELECT COUNT(*) FROM parts").fetchone()[0] == 0:
             db.executemany(
@@ -241,6 +242,7 @@ def seed_demo_data(db) -> None:
                    stock,min_stock,supplier,active) VALUES(?,?,?,?,?,?,?,?,?,'Danh mục mẫu',1)""",
             EXTRA_PARTS,
         )
+        seed_expanded_catalog(db)
 
         def vehicle(plate: str):
             return db.execute("SELECT id, customer_id FROM vehicles WHERE plate=?", (plate,)).fetchone()
@@ -476,11 +478,11 @@ def seed_demo_data(db) -> None:
         # Lịch sử sửa chữa/hóa đơn đầy đủ cho các tài khoản khách hàng demo.
         visit_templates = [
             ("2025-02-10", "Thay dầu động cơ", 450000, "Dầu động cơ 5W-30 4L", 1, 680000, 18200),
-            ("2025-05-18", "Kiểm tra hệ thống phanh", 350000, "Má phanh trước Toyota", 1, 2150000, 24700),
+            ("2025-05-18", "Kiểm tra hệ thống phanh", 350000, "Má phanh trước", 1, 2150000, 24700),
             ("2025-09-22", "Vệ sinh điều hòa", 650000, "Lọc gió điều hòa", 1, 290000, 31200),
-            ("2026-02-14", "Bảo dưỡng định kỳ", 850000, "Lọc dầu Mazda", 1, 320000, 37600),
+            ("2026-02-14", "Bảo dưỡng định kỳ", 850000, "Lọc dầu động cơ", 1, 320000, 37600),
             ("2026-06-08", "Cân chỉnh bánh xe", 300000, "", 0, 0, 42800),
-            ("2026-09-28", "Kiểm tra tổng quát", 250000, "Bugi Kia Seltos", 4, 185000, 47500),
+            ("2026-09-28", "Kiểm tra tổng quát", 250000, "Kiểm tra hệ thống đánh lửa", 1, 740000, 45200),
         ]
         demo_billing_profiles = [
             ("090 123 4567", 4),
@@ -494,7 +496,7 @@ def seed_demo_data(db) -> None:
             if not customer:
                 continue
             linked_vehicle = db.execute(
-                "SELECT id,plate FROM vehicles WHERE customer_id=? ORDER BY id LIMIT 1", (customer["id"],)
+                "SELECT id,plate,make,model FROM vehicles WHERE customer_id=? ORDER BY id LIMIT 1", (customer["id"],)
             ).fetchone()
             if not linked_vehicle:
                 continue
@@ -502,6 +504,20 @@ def seed_demo_data(db) -> None:
                 order_code = f"PSC-KH{customer['id']:02d}-{index:02d}"
                 if db.execute("SELECT id FROM repair_orders WHERE code=?", (order_code,)).fetchone():
                     continue
+                # Dữ liệu demo dùng chung nhiều khách: không gắn phụ tùng riêng hãng/dòng
+                # cho xe khác, hoặc tạo lịch sử km cao hơn bản ghi đến sau.
+                named_part = part_name.casefold()
+                make = (linked_vehicle["make"] or "").casefold()
+                model = (linked_vehicle["model"] or "").casefold()
+                if (("mazda" in named_part and (make != "mazda" or model not in ("cx-5", "mazda 3", "3")))
+                        or ("kia seltos" in named_part and (make != "kia" or model != "seltos"))
+                        or ("toyota" in named_part and make != "toyota")):
+                    part_name, part_qty, part_price = "", 0, 0
+                later_mileage = db.execute(
+                    "SELECT MIN(mileage) FROM repair_history WHERE vehicle_id=? AND repaired_at>? AND mileage IS NOT NULL",
+                    (linked_vehicle["id"], visit_date)).fetchone()[0]
+                if later_mileage is not None and mileage >= later_mileage:
+                    mileage = max(0, later_mileage - 100)
                 subtotal = service_price + part_qty * part_price
                 _, tax, invoice_total = with_tax(subtotal)
                 payment_mode = index % 3

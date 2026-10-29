@@ -67,7 +67,8 @@ def list_parts(
         params.append(category)
     if low_stock:
         base += " AND stock<=min_stock"
-    clause, clause_params = search_clause(q, ["code", "name", "category", "compatible", "supplier"])
+    clause, clause_params = search_clause(q, ["code", "name", "category", "compatible", "supplier",
+        "compatibility_accuracy", "usage_requirements", "price_note", "supplier_note"])
     base += clause
     params.extend(clause_params)
     order_by = "ORDER BY CASE WHEN stock<=min_stock THEN 0 ELSE 1 END, name"
@@ -87,8 +88,9 @@ def create_part(
             cursor = db.execute(
                 """
                 INSERT INTO parts(code, name, category, compatible, unit, cost_price, sell_price,
-                    stock, min_stock, supplier, active)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    stock, min_stock, supplier, compatibility_accuracy, usage_requirements,
+                    price_note, supplier_note, active)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 """,
                 (
                     item.code.upper(),
@@ -101,6 +103,10 @@ def create_part(
                     item.stock,
                     item.min_stock,
                     item.supplier,
+                    item.compatibility_accuracy,
+                    item.usage_requirements,
+                    item.price_note,
+                    item.supplier_note,
                 ),
             )
             part_id = cursor.lastrowid
@@ -172,7 +178,7 @@ def update_part(
             )
             if cursor.rowcount == 0:
                 raise NotFoundError("Không tìm thấy phụ tùng")
-            write_audit(db, user, "part.update", "parts", part_id, {"code": fields["code"]}, client_ip(request))
+            write_audit(db, user, "part.update", "parts", part_id, {"code": fields.get("code")}, client_ip(request))
             return dict(db.execute("SELECT * FROM parts WHERE id=?", (part_id,)).fetchone())
     except sqlite3.IntegrityError as exc:
         raise ConflictError("Mã phụ tùng đã tồn tại") from exc

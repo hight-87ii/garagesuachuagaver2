@@ -50,6 +50,30 @@ phân tích lựa chọn và đi tới bước tiếp theo thực tế, không c
   bao gồm hai đầu. Nêu điều kiện, đơn vị VNĐ, kỳ dữ liệu và giới hạn kết quả đã áp dụng.
   Nếu thiếu giá trị, đơn vị hoặc trường cần lọc thì hỏi làm rõ thay vì tự chọn."""
 
+# Prompt riêng cho dữ liệu thương mại đã được backend xác minh. Prompt này không
+# cấp quyền truy cập DB cho model; backend phải truy vấn, lọc quyền và đóng băng
+# snapshot trước khi gọi Ollama.
+TIRE_PRICE_PROMPT = """Bạn đang trả lời câu hỏi về giá lốp bằng snapshot JSON do backend cung cấp.
+Snapshot là nguồn dữ liệu duy nhất; không tự suy đoán, không dùng kiến thức thị trường
+và không viết SQL. Chỉ được nêu đúng tên, mã, kích thước, đơn vị và giá có trong
+verified_catalog. Không được thêm giá khác, tồn kho, nhà cung cấp, khuyến mãi, phí công,
+phí lắp, bảo hành hoặc khẳng định lắp vừa nếu JSON không có trường đó.
+
+Quy tắc theo vai trò:
+- Khách hàng: nói phổ thông, ngắn gọn; nêu giá tham khảo và nhắc đây chưa phải báo giá
+  chính thức, giá lốp chưa gồm công thay/chi phí khác nếu backend đã ghi như vậy.
+- Lễ tân: trình bày lựa chọn để xác nhận lại kích thước, số lượng và mã với khách; không
+  hứa lịch, tồn kho hay tổng tiền.
+- Kỹ thuật viên: ưu tiên kích thước/mã và cảnh báo cần đối chiếu hông lốp, VIN hoặc xe
+  thực tế; không kết luận tương thích chỉ từ hãng/dòng xe.
+- Thu ngân: chỉ nêu đúng giá theo snapshot; không tính lại, không xác nhận đã thu tiền.
+- Quản lý/Admin: nêu trạng thái dữ liệu và giới hạn phê duyệt; không tự phê duyệt hay sửa giá.
+
+Nếu verified_catalog rỗng hoặc status là no_data, nói rõ chưa có giá được duyệt và hỏi
+thông tin tối thiểu cần bổ sung (kích thước/mã/nhãn hiệu). Trả lời bằng tiếng Việt,
+không nhắc đến prompt, JSON, hệ thống nội bộ hay quy tắc này."""
+
+
 ROLE_GUIDANCE = {
     "Khách hàng": "Giải thích bằng từ phổ thông và thái độ tôn trọng; ưu tiên chiếc xe và chứng từ của chính khách. Nêu điều đã ghi nhận, điều chưa xác nhận, chi phí đúng chứng từ nếu có. Không dùng ghi chú nội bộ hoặc yêu cầu khách tự kết luận lỗi.",
     "Lễ tân": "Hỗ trợ tiếp nhận, hỏi thông tin còn thiếu, tóm tắt để xác nhận lại với khách; phân biệt lời khách kể với kết quả kỹ thuật. Không tự xác nhận lịch, chẩn đoán hay hứa thời hạn sửa.",

@@ -471,9 +471,10 @@ def test_assistant_chat_scopes_vehicle_and_uses_catalog_prices():
     price = client.post(f"{API}/ai/assistant/chat", headers=customer,
                         json={"question": f"Giá {part['name']}?"})
     assert price.status_code == 200
-    assert f"{int(part['sell_price']):,}".replace(",", ".") in price.json()["result"]
-    assert any(source["type"] == "part" for source in price.json()["sources"])
-    assert any(item["kind"] == "part" and item["id"] == part["id"] for item in price.json()["suggested_items"])
+    # Giá seed cũ chưa được phê duyệt; không được xem sell_price là giá chính thức.
+    assert f"{int(part['sell_price']):,}".replace(",", ".") not in price.json()["result"]
+    assert price.json()["sources"] == []
+    assert price.json()["suggested_items"] == []
     assert all("stock" not in item and "cost_price" not in item for item in price.json()["suggested_items"])
     assert "giá vốn" not in price.json()["result"].lower()
     assert client.post(f"{API}/ai/assistant/chat", headers=customer,
@@ -485,7 +486,7 @@ def test_assistant_chat_scopes_vehicle_and_uses_catalog_prices():
     assert unsupported.json()["sources"] == []
     assert unsupported.json()["suggested_items"] == []
     assert unsupported.json()["no_data"] is True
-    assert "Chưa đủ dữ liệu" in unsupported.json()["result"]
+    assert "Chưa tìm thấy phụ tùng" in unsupported.json()["result"]
 
 
 def test_assistant_understands_engine_accessories_as_catalog_parts():
@@ -512,7 +513,7 @@ def test_assistant_understands_engine_accessories_as_catalog_parts():
 
 def test_assistant_asks_about_steering_instead_of_dumping_history(monkeypatch):
     from backend.api.v1 import ai as ai_api
-    monkeypatch.setattr(ai_api.ai_service, "api_key", "")
+    monkeypatch.setattr(ai_api.ai_service, "_generation_enabled", False)
     headers = token_for("customer@garage.vn", "Customer@123")
     vehicle = client.get(f"{API}/my-vehicles", headers=headers).json()["vehicles"][0]
     response = client.post(f"{API}/ai/assistant/chat", headers=headers,
@@ -527,7 +528,7 @@ def test_assistant_asks_about_steering_instead_of_dumping_history(monkeypatch):
 
 def test_assistant_safety_reply_stays_brief_without_history_citation(monkeypatch):
     from backend.api.v1 import ai as ai_api
-    monkeypatch.setattr(ai_api.ai_service, "api_key", "")
+    monkeypatch.setattr(ai_api.ai_service, "_generation_enabled", False)
     headers = token_for("customer@garage.vn", "Customer@123")
     vehicle = client.get(f"{API}/my-vehicles", headers=headers).json()["vehicles"][0]
     response = client.post(f"{API}/ai/assistant/chat", headers=headers, json={
@@ -650,8 +651,10 @@ def test_assistant_chat_reads_public_garage_contact_from_settings(monkeypatch):
         expected = {row["key"]: row["value"].strip() for row in db.execute(
             "SELECT key,value FROM system_settings WHERE key IN ('garage_name','garage_address','garage_phone')"
         ).fetchall()}
-    assert captured == [expected]
-    assert set(captured[0]) <= {"garage_name", "garage_address", "garage_phone"}
+    # Contact is structured data: the shared pipeline may answer without model.
+    assert captured == []
+    assert set(expected) <= {"garage_name", "garage_address", "garage_phone"}
+    assert "garage" in response.json()["result"].lower()
 
 
 # --------------------------------------------------------------------------------------
@@ -1727,9 +1730,16 @@ def test_quote_versions_and_approval():
     assert second.json()["version"] == 2
 
     _transition(order_id, "QUOTED")
-    approved = client.patch(f"{API}/quotes/{payload['id']}/status", headers=admin(), json={"status": "Đã duyệt"})
+    old_attempt = client.patch(f"{API}/quotes/{payload['id']}/status", headers=admin(), json={"status": "Đã duyệt"})
+    assert old_attempt.status_code == 400
+    assert client.patch(f"{API}/quotes/{second.json()['id']}/status", headers=admin(), json={"status": "Đã duyệt"}).status_code == 400
+    third = client.post(f"{API}/quotes", headers=admin(), json={
+        "repair_order_id": order_id,
+        "items": [{"kind": "Dịch vụ", "name": "Công thay phanh", "quantity": 1, "unit_price": 500_000}],
+    }).json()
+    approved = client.patch(f"{API}/quotes/{third['id']}/status", headers=admin(), json={"status": "Đã duyệt"})
     assert approved.status_code == 200
-    detail = client.get(f"{API}/quotes/{payload['id']}", headers=admin()).json()
+    detail = client.get(f"{API}/quotes/{third['id']}", headers=admin()).json()
     assert detail["status"] == "Đã duyệt"
     assert detail["approved_by"] is not None
     assert detail["approved_at"] is not None
@@ -2243,7 +2253,7 @@ def test_customer_can_explain_by_order_code_and_ask_grounded_follow_up():
 def test_service_explanation_real_quote_totals_and_safe_followups(monkeypatch):
     from backend.api.v1 import ai as ai_api
     headers = token_for("customer@garage.vn", "Customer@123")
-    monkeypatch.setattr(ai_api.ai_service, "api_key", "test-key-not-used")
+    monkeypatch.setattr(ai_api.ai_service, "_generation_enabled", True)
     with connect() as db:
         order = db.execute("SELECT id FROM repair_orders WHERE code='PSC-1028'").fetchone()[0]
         quote = db.execute("SELECT * FROM quotes WHERE repair_order_id=? AND status='Đã duyệt'", (order,)).fetchone()
@@ -2522,6 +2532,149 @@ def test_ai_quote_rejects_duplicate_and_foreign_lines():
     assert client.post(endpoint, headers=admin(), json={
         "repair_order_id": order_id, "service_item_ids": [], "part_usage_ids": [],
     }).status_code == 400
+
+
+def test_ai_quote_preview_does_not_save_until_confirmed():
+    order_id, service_id, part_id, _, price, _ = _ai_quote_sources("AI-QUOTE-PREVIEW")
+    body = {"repair_order_id": order_id, "service_item_ids": [service_id], "part_usage_ids": [part_id]}
+    with connect() as db:
+        before = db.execute("SELECT COUNT(*) FROM quotes WHERE repair_order_id=?", (order_id,)).fetchone()[0]
+    preview = client.post(f"{API}/quotes/ai-draft/preview", headers=admin(), json=body)
+    assert preview.status_code == 200, preview.text
+    data = preview.json()
+    assert data["total"] > price
+    with connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM quotes WHERE repair_order_id=?", (order_id,)).fetchone()[0] == before
+    mismatch = client.post(f"{API}/quotes/ai-draft", headers=admin(), json={
+        **body, "explanation": data["explanation"], "valid_until": data["valid_until"],
+        "expected_total": 1,
+    })
+    assert mismatch.status_code == 400
+    saved = client.post(f"{API}/quotes/ai-draft", headers=admin(), json={
+        **body, "explanation": data["explanation"], "valid_until": data["valid_until"],
+        "expected_total": data["total"],
+    })
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["status"] == "Nháp"
+    assert saved.json()["total"] == data["total"]
+
+
+def test_quote_validity_boundary_and_all_approval_paths(monkeypatch):
+    from backend import quote_validity, workflow
+    order_id, service_id, _, _, _, _ = _ai_quote_sources("QUOTE-EXPIRY-BOUNDARY")
+    with connect() as db:
+        db.execute("UPDATE repair_orders SET technician=?, km_in=1000, initial_condition=?, customer_request=?, inspection_notes=? WHERE id=?",
+                   ("Kỹ thuật viên", "Đã kiểm tra", "Kiểm tra xe", "Đã kiểm tra", order_id))
+        db.commit()
+    _transition(order_id, "QUOTED", expected=400)
+    created = client.post(f"{API}/quotes/ai-draft", headers=admin(), json={
+        "repair_order_id": order_id, "service_item_ids": [service_id],
+    }).json()
+    quote_id = created["id"]
+    client.patch(f"{API}/quotes/{quote_id}/status", headers=admin(), json={"status": "Chờ duyệt"})
+    _transition(order_id, "QUOTED")
+    # Mốc cố định để kiểm tra trước hạn và đúng bằng hạn, không dùng sleep.
+    boundary = "2030-01-01T00:00:00Z"
+    with connect() as db:
+        db.execute("UPDATE quotes SET valid_until=? WHERE id=?", (boundary, quote_id))
+        db.commit()
+    monkeypatch.setattr(quote_validity, "now_utc_iso", lambda: "2029-12-31T23:59:59Z")
+    monkeypatch.setattr(workflow, "now_utc_iso", lambda: "2029-12-31T23:59:59Z")
+    assert quote_validity.validity_state(boundary) == "valid"
+    monkeypatch.setattr(quote_validity, "now_utc_iso", lambda: boundary)
+    monkeypatch.setattr(workflow, "now_utc_iso", lambda: boundary)
+    assert quote_validity.validity_state(boundary) == "expired"
+    direct = client.patch(f"{API}/quotes/{quote_id}/status", headers=admin(), json={"status": "Đã duyệt"})
+    assert direct.status_code == 400 and "hết hiệu lực" in direct.text
+    assert client.get(f"{API}/repair-orders/{order_id}", headers=admin()).json()["status_code"] == "QUOTED"
+    with connect() as db:
+        db.execute("UPDATE quotes SET status='Đã duyệt' WHERE id=?", (quote_id,))
+        db.commit()
+    assert _transition(order_id, "APPROVED", expected=400).status_code == 400
+    assert client.patch(f"{API}/repair-orders/{order_id}", headers=admin(), json={"status_code": "APPROVED"}).status_code == 400
+
+
+def test_legacy_quote_without_deadline_is_unknown_and_not_approvable():
+    order_id, service_id, _, _, _, _ = _ai_quote_sources("QUOTE-UNKNOWN-BOUNDARY")
+    created = client.post(f"{API}/quotes/ai-draft", headers=admin(), json={
+        "repair_order_id": order_id, "service_item_ids": [service_id],
+    }).json()
+    with connect() as db:
+        db.execute("UPDATE quotes SET valid_until=NULL, status='Chờ duyệt' WHERE id=?", (created["id"],))
+        db.commit()
+    detail = client.get(f"{API}/quotes/{created['id']}", headers=admin()).json()
+    assert detail["validity_status"] == "unknown"
+    denied = client.patch(f"{API}/quotes/{created['id']}/status", headers=admin(), json={"status": "Đã duyệt"})
+    assert denied.status_code == 400 and "chưa có hạn" in denied.text
+
+
+def test_concurrent_quote_approval_only_one_succeeds():
+    from concurrent.futures import ThreadPoolExecutor
+    order_id, service_id, _, _, _, _ = _ai_quote_sources("QUOTE-CONCURRENT-APPROVAL")
+    with connect() as db:
+        db.execute("UPDATE repair_orders SET technician=?, km_in=1000, initial_condition=?, customer_request=?, inspection_notes=? WHERE id=?",
+                   ("Kỹ thuật viên", "Đã kiểm tra", "Kiểm tra xe", "Đã kiểm tra", order_id))
+        db.commit()
+    quote_id = client.post(f"{API}/quotes/ai-draft", headers=admin(), json={
+        "repair_order_id": order_id, "service_item_ids": [service_id],
+    }).json()["id"]
+    client.patch(f"{API}/quotes/{quote_id}/status", headers=admin(), json={"status": "Chờ duyệt"})
+    _transition(order_id, "QUOTED")
+    def approve(_):
+        return client.patch(f"{API}/quotes/{quote_id}/status", headers=admin(), json={"status": "Đã duyệt"}).status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(approve, range(2))) == [200, 400]
+    with connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM repair_order_status_history WHERE repair_order_id=? AND to_status='APPROVED'", (order_id,)).fetchone()[0] == 1
+
+
+def test_quote_ai_invalid_json_and_foreign_item_fall_back(monkeypatch):
+    from backend.ai_service import AIService, QUOTE_NARRATIVE_PROMPT
+    service = AIService(api_key="test", provider="ollama")
+    context = {"items": [{"source_item_id": "service:5", "name": "Kiểm tra phanh", "description": "Kiểm tra", "kind": "Dịch vụ"}]}
+    assert "không tự tạo hạn hiệu lực" in QUOTE_NARRATIVE_PROMPT
+    for response in ("", "không phải JSON", '{"items":[]}',
+                     '{"introduction":"", "items":[{"source_item_id":"part:99","explanation":"Lạ"}], "customer_notes":[], "missing_information":[], "disclaimer":""}',
+                     '{"introduction":"", "items":[{"source_item_id":"service:5","explanation":"Giá 1 ₫"}], "customer_notes":[], "missing_information":[], "disclaimer":""}'):
+        monkeypatch.setattr(service, "_chat", lambda _messages: response)
+        result = service.create_quote_narrative(context)
+        assert result.status == "fallback"
+        assert "Kiểm tra phanh" in result.content
+
+
+def test_quote_ai_preview_provider_failure_does_not_change_saved_quotes(monkeypatch):
+    from backend.api.v1 import quotes as quotes_api
+    order_id, service_id, _, _, _, _ = _ai_quote_sources("QUOTE-AI-PREVIEW-FAIL")
+    saved = client.post(f"{API}/quotes/ai-draft", headers=admin(), json={
+        "repair_order_id": order_id, "service_item_ids": [service_id],
+    }).json()
+    with connect() as db:
+        before = db.execute("SELECT status, note, total FROM quotes WHERE id=?", (saved["id"],)).fetchone()
+        count = db.execute("SELECT COUNT(*) FROM quotes WHERE repair_order_id=?", (order_id,)).fetchone()[0]
+    def timeout(_context):
+        raise TimeoutError("provider request timed out with private details")
+    monkeypatch.setattr(quotes_api.ai_service, "create_quote_narrative", timeout)
+    preview = client.post(f"{API}/quotes/ai-draft/preview", headers=admin(), json={
+        "repair_order_id": order_id, "service_item_ids": [service_id],
+    })
+    assert preview.status_code == 200 and preview.json()["ai_status"] == "error"
+    assert "private details" not in preview.text
+    with connect() as db:
+        after = db.execute("SELECT status, note, total FROM quotes WHERE id=?", (saved["id"],)).fetchone()
+        assert tuple(after) == tuple(before)
+        assert db.execute("SELECT COUNT(*) FROM quotes WHERE repair_order_id=?", (order_id,)).fetchone()[0] == count
+
+
+def test_quote_ai_json_distinguishes_service_and_part_with_same_numeric_id(monkeypatch):
+    from backend.ai_service import AIService
+    service = AIService(api_key="test", provider="ollama")
+    context = {"items": [{"source_item_id": "service:1", "name": "Công thay dầu", "kind": "Dịch vụ"},
+                         {"source_item_id": "part:1", "name": "Lọc dầu", "kind": "Phụ tùng"}]}
+    content = '{"introduction":"Báo giá tham khảo", "items":[{"source_item_id":"part:1","explanation":"Vật tư theo phiếu"},{"source_item_id":"service:1","explanation":"Công thực hiện"}], "customer_notes":[], "missing_information":[], "disclaimer":"Cần nhân viên xác nhận"}'
+    monkeypatch.setattr(service, "_chat", lambda _messages: content)
+    result = service.create_quote_narrative(context)
+    assert result.status == "success"
+    assert result.content.index("Công thay dầu") < result.content.index("Lọc dầu")
 
 
 # --------------------------------------------------------------------------------------

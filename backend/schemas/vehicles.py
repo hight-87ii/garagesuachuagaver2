@@ -1,5 +1,7 @@
 """Schema cho module phương tiện (xe)."""
 
+from datetime import date
+
 from pydantic import ConfigDict, Field
 
 from .common import RecordModel
@@ -105,3 +107,35 @@ class MyVehicleOut(VehicleOut):
 class MyVehiclesOut(RecordModel):
     customer: dict
     vehicles: list[dict] = Field(default_factory=list)
+
+
+class VehicleProfileUpdate(RecordModel):
+    """Optional details; identifiers (VIN, plate, chassis/engine number) are never owner-editable."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    color: str | None = Field(default=None, max_length=60)
+    mileage: int | None = Field(default=None, ge=0, le=10_000_000)
+    first_registration_year: int | None = Field(default=None, ge=1900, le=2100)
+    vehicle_type: str | None = Field(default=None, max_length=60)
+    seat_count: int | None = Field(default=None, ge=1, le=60)
+    door_count: int | None = Field(default=None, ge=1, le=10)
+    engine_number: str | None = Field(default=None, max_length=80)
+    transmission: str | None = Field(default=None, max_length=60)
+    drivetrain: str | None = Field(default=None, max_length=60)
+    displacement_cc: int | None = Field(default=None, gt=0, le=20_000)
+    power_kw: float | None = Field(default=None, gt=0, le=3000)
+    torque_nm: float | None = Field(default=None, gt=0, le=10000)
+    fuel_consumption: str | None = Field(default=None, max_length=100)
+    fuel_tank_liters: float | None = Field(default=None, gt=0, le=1000)
+    tire_size: str | None = Field(default=None, max_length=60)
+    tire_pressure: str | None = Field(default=None, max_length=100)
+    oil_capacity_liters: float | None = Field(default=None, gt=0, le=100)
+    oil_spec: str | None = Field(default=None, max_length=120)
+    registration_info: str | None = Field(default=None, max_length=200)
+    inspection_expires_at: date | None = None
+    liability_insurance_expires_at: date | None = None
+    comprehensive_insurance_expires_at: date | None = None
+    next_service_at: date | None = None
+    next_service_mileage: int | None = Field(default=None, ge=0, le=10_000_000)
+    maintenance_source: str | None = Field(default=None, max_length=200)
+    maintenance_items: str | None = Field(default=None, max_length=1000)

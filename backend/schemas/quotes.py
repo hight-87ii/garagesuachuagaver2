@@ -63,6 +63,8 @@ class AIQuoteDraftIn(RecordModel):
     service_item_ids: list[int] = Field(default_factory=list, max_length=100)
     part_usage_ids: list[int] = Field(default_factory=list, max_length=100)
     valid_until: str | None = Field(default=None, max_length=40)
+    explanation: str | None = Field(default=None, min_length=1, max_length=4000)
+    expected_total: int | None = Field(default=None, ge=0)
 
 
 class AIQuoteDraftOut(QuoteCreatedOut):
@@ -71,6 +73,20 @@ class AIQuoteDraftOut(QuoteCreatedOut):
     ai_status: str
     explanation: str
     sources: list[dict] = Field(default_factory=list)
+
+
+class AIQuotePreviewOut(RecordModel):
+    subtotal: int
+    labor_subtotal: int
+    parts_subtotal: int
+    discount: int
+    tax: int
+    total: int
+    tax_rate: float
+    valid_until: str
+    estimated_duration_min: int | None = None
+    ai_status: str
+    explanation: str
 
 
 class QuoteOut(RecordModel):
@@ -88,6 +104,7 @@ class QuoteOut(RecordModel):
     estimated_duration_min: int | None = None
     tax_rate: float | None = None
     valid_until: str | None = None
+    validity_status: str | None = None
     note: str | None = None
     approved_by: int | None = None
     approved_at: str | None = None

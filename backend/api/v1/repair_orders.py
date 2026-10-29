@@ -21,6 +21,7 @@ from ...domain import (
     technician_id_for,
 )
 from ...money import line_total, to_vnd
+from ...quote_validity import validity_state
 from ...schemas.common import Page
 from ...schemas.repair_orders import (
     DeletedOut,
@@ -173,6 +174,8 @@ def repair_order_detail(
         quotes = [dict(row) for row in db.execute(
             "SELECT * FROM quotes WHERE repair_order_id=? ORDER BY version DESC", (order_id,)
         ).fetchall()]
+        for quote in quotes:
+            quote["validity_status"] = validity_state(quote["valid_until"])
         history = history_for(db, order_id, order)
         workflow = transition_payload(db, order)
     return {

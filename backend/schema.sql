@@ -79,6 +79,10 @@ CREATE TABLE IF NOT EXISTS parts (
     stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
     min_stock INTEGER NOT NULL DEFAULT 3 CHECK (min_stock >= 0),
     supplier TEXT NOT NULL DEFAULT '',
+    compatibility_accuracy TEXT NOT NULL DEFAULT '',
+    usage_requirements TEXT NOT NULL DEFAULT '',
+    price_note TEXT NOT NULL DEFAULT '',
+    supplier_note TEXT NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))

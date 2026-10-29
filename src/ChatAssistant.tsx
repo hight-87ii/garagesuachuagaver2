@@ -18,10 +18,10 @@ function AssistantAppointmentItems({items,vehicleId,onAdd}:{items:NonNullable<AI
   </div>;
 }
 
-export default function ChatAssistant({user,compact=false,onAddToAppointment,onOpenAppointment}:{user:User;compact?:boolean;onAddToAppointment?:(selection:AppointmentSelection)=>void;onOpenAppointment?:(id:number)=>void}){
+export default function ChatAssistant({user,compact=false,initialVehicleId,onAddToAppointment,onOpenAppointment}:{user:User;compact?:boolean;initialVehicleId?:number;onAddToAppointment?:(selection:AppointmentSelection)=>void;onOpenAppointment?:(id:number)=>void}){
   const customer=user.role==='Khách hàng';
   const [vehicles,setVehicles]=useState<Vehicle[]>([]);
-  const [vehicleId,setVehicleId]=useState('');
+  const [vehicleId,setVehicleId]=useState(initialVehicleId?String(initialVehicleId):'');
   const [plate,setPlate]=useState('');
   const [conversations,setConversations]=useState<AIConversation[]>([]);
   const [activeId,setActiveId]=useState<number|null>(null);
@@ -49,11 +49,11 @@ export default function ChatAssistant({user,compact=false,onAddToAppointment,onO
     AIService.listConversations().then(list=>{
       if(!active)return;
       setConversations(list);
-      const restored=list.find(item=>item.id===remembered.current);
-      setActiveId(restored?.id||list[0]?.id||null);
+       const restored=list.find(item=>item.id===remembered.current);
+       setActiveId(initialVehicleId?null:restored?.id||list[0]?.id||null);
     }).catch(err=>{if(active)setError(err.message)}).finally(()=>{if(active){setLoadingList(false);setHydrated(true)}});
     return()=>{active=false};
-  },[user.id]);
+   },[user.id,initialVehicleId]);
 
   useEffect(()=>{
     if(!customer)return;
@@ -61,11 +61,11 @@ export default function ChatAssistant({user,compact=false,onAddToAppointment,onO
     fetch(`${API}/api/v1/my-vehicles`,{headers:{Authorization:`Bearer ${sessionStorage.getItem('garage_token')||''}`}})
       .then(async response=>{if(!response.ok)throw new Error('Không tải được hồ sơ xe.');return response.json()})
       .then(data=>{if(!active)return;const list=(data.vehicles||[]) as Vehicle[];setVehicles(list);
-        setVehicleId(current=>current|| (list.length===1?String(list[0].id):''))})
+         setVehicleId(current=>initialVehicleId&&list.some(v=>v.id===initialVehicleId)?String(initialVehicleId):current|| (list.length===1?String(list[0].id):''))})
       .catch(err=>{if(active)setError(err.message)})
       .finally(()=>{if(active)setVehicleLoading(false)});
     return()=>{active=false};
-  },[customer,user.id]);
+   },[customer,user.id,initialVehicleId]);
 
   useEffect(()=>{
     if(!hydrated)return;

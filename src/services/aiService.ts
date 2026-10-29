@@ -117,6 +117,17 @@ export const AIService = {
   createQuoteDraft(input: { repair_order_id: number; service_item_ids: number[]; part_usage_ids: number[] }) {
     return post<AIQuoteDraftResult>('/quotes/ai-draft', input);
   },
+  previewQuoteDraft(input: { repair_order_id: number; service_item_ids: number[]; part_usage_ids: number[] }) {
+    return post<AIQuotePreview>('/quotes/ai-draft/preview', input);
+  },
+  saveQuoteDraft(input: { repair_order_id: number; service_item_ids: number[]; part_usage_ids: number[]; valid_until: string; expected_total: number; explanation: string }) {
+    return post<AIQuoteDraftResult>('/quotes/ai-draft', input);
+  },
+};
+
+export type AIQuotePreview = {
+  subtotal:number; discount:number; tax:number; total:number; valid_until:string;
+  ai_status:string; explanation:string; estimated_duration_min?:number|null;
 };
 
 export type AIQuoteDraftResult = {

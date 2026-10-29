@@ -1,6 +1,5 @@
 """Chat giữ nguyên nguồn/giới hạn và cá nhân hóa hướng dẫn theo vai trò."""
 
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -30,13 +29,12 @@ def test_role_guidance_has_common_safety_rules(role, expected):
 def test_assistant_uses_role_prompt_and_service_follow_up_does_not_trust_model(monkeypatch):
     captured = []
 
-    class FakeCompletions:
-        def create(self, **kwargs):
-            captured.append(kwargs["messages"])
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Đã hiểu."))])
-
-    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=lambda **_: SimpleNamespace(
-        chat=SimpleNamespace(completions=FakeCompletions()))))
+    def post(url, **kwargs):
+        assert url == "http://127.0.0.1:11434/api/chat"
+        captured.append(kwargs["json"]["messages"])
+        return SimpleNamespace(raise_for_status=lambda: None,
+                               json=lambda: {"message": {"content": "Đã hiểu."}})
+    monkeypatch.setattr("httpx.post", post)
     service = AIService(api_key="test-key")
     vehicle = {"vehicle": {"plate": "51H-123.45"}, "history": [{"repaired_at": "2026-01-01"}]}
     service.answer_assistant("Đã kiểm tra những gì?", vehicle, [],
@@ -58,12 +56,11 @@ def test_model_vehicle_context_is_bounded_without_mutating_source(monkeypatch):
     import json
 
     messages = []
-    class Completions:
-        def create(self, **kwargs):
-            messages.append(kwargs["messages"])
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Chưa đủ dữ liệu."))])
-    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=lambda **_: SimpleNamespace(
-        chat=SimpleNamespace(completions=Completions()))))
+    def post(url, **kwargs):
+        messages.append(kwargs["json"]["messages"])
+        return SimpleNamespace(raise_for_status=lambda: None,
+                               json=lambda: {"message": {"content": "Chưa đủ dữ liệu."}})
+    monkeypatch.setattr("httpx.post", post)
     vehicle = {"vehicle": {"plate": "51H-123.45"}, "history": [
         {"repaired_at": "2026-01-01", "services": [{"name": "Bảo dưỡng"}],
          "technical_notes": ["x" * 1000]} for _ in range(50)
@@ -269,6 +266,7 @@ def test_chat_is_brief_and_answers_only_requested_intent():
     ("Xe tôi bị mất phanh!", "Giảm tốc"),
     ("Động cơ đang quá nhiệt", "Tấp vào nơi an toàn"),
     ("Xe có mùi khét", "Tấp xe vào nơi an toàn"),
+    ("Lốp phồng có nguy cơ nổ", "Giảm tốc từ từ"),
 ])
 def test_urgent_safety_comes_before_vehicle_history(question, first):
     service = AIService(api_key="")

@@ -19,6 +19,7 @@ import CustomerInvoicesPage from './CustomerInvoicesPage';
 import AppointmentCreateModal from './AppointmentCreateModal';
 import type { AppointmentSelection } from './AppointmentCreateModal';
 import CustomerDashboardPage from './CustomerDashboardPage';
+import MyVehiclesPage from './MyVehiclesPage';
 import CashierBillingPage from './CashierBillingPage';
 import ServiceFollowUpChat from './ServiceFollowUpChat';
 import AISourceReferences, { type AISource } from './AISourceReferences';
@@ -92,6 +93,7 @@ function App() {
   const [modal, setModal] = useState(false);
   const [appointmentSelection,setAppointmentSelection]=useState<AppointmentSelection|null>(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiVehicleId,setAiVehicleId]=useState<number|null>(null);
   const [query, setQuery] = useState('');
   const [selectedAppointment, setSelectedAppointment] = useState<any>(null);
   const [apptCount, setApptCount] = useState<number | null>(null);
@@ -196,7 +198,7 @@ function App() {
         : page === 'Xe'
         ? <VehiclesPage onOpenAI={() => setAiOpen(true)} onLoaded={setVehicleCount}/>
         : page === 'Xe của tôi'
-        ? <MyVehiclesPage onOpenAI={() => setAiOpen(true)}/>
+          ? <MyVehiclesPage apiBase={API} onOpenAI={(vehicleId)=>{setAiVehicleId(vehicleId??null);setAiOpen(true)}} onNewAppointment={()=>setModal(true)}/>
          : page === 'Hóa đơn'
          ? user.role === 'Khách hàng' ? <CustomerInvoicesPage apiBase={API}/> : <CashierBillingPage apiBase={API}/>
          : page === 'Dịch vụ'
@@ -262,7 +264,7 @@ function App() {
 
     {modal && <AppointmentCreateModal currentUser={user} apiBase={API} initialSelection={appointmentSelection} onClose={() => {setModal(false);setAppointmentSelection(null)}} onCreated={(appointment) => {setData({...data, appointments: [...data.appointments, appointment]}); setModal(false);setAppointmentSelection(null)}}/>}
     {selectedAppointment && <AppointmentDetail appointment={selectedAppointment} onClose={() => setSelectedAppointment(null)} onStatusChange={updateAppointmentStatus}/>} 
-     {aiOpen && <div className="drawer-overlay" onClick={() => setAiOpen(false)}><aside className="ai-drawer assistant-drawer" onClick={event => event.stopPropagation()} aria-label="Trợ lý ThreeH Workshop"><div className="drawer-head"><div><span><Bot size={20}/></span><div><strong>Trợ lý ThreeH Workshop</strong><small><i/> Hỏi đáp theo quyền truy cập</small></div></div><button onClick={() => setAiOpen(false)} aria-label="Đóng trợ lý"><X/></button></div><ChatAssistant key={user.id} user={user} compact onAddToAppointment={openAppointmentFromAI} onOpenAppointment={openAppointmentLink}/></aside></div>}
+      {aiOpen && <div className="drawer-overlay" onClick={() => setAiOpen(false)}><aside className="ai-drawer assistant-drawer" onClick={event => event.stopPropagation()} aria-label="Trợ lý ThreeH Workshop"><div className="drawer-head"><div><span><Bot size={20}/></span><div><strong>Trợ lý ThreeH Workshop</strong><small><i/> Hỏi đáp theo quyền truy cập</small></div></div><button onClick={() => setAiOpen(false)} aria-label="Đóng trợ lý"><X/></button></div><ChatAssistant key={`${user.id}-${aiVehicleId??'general'}`} user={user} compact initialVehicleId={aiVehicleId??undefined} onAddToAppointment={openAppointmentFromAI} onOpenAppointment={openAppointmentLink}/></aside></div>}
   </div>
 }
 
@@ -541,18 +543,18 @@ function InventoryPage({onOpenAI}:{onOpenAI:()=>void}) {
   const saveAndClose=()=>{setEditing(null);setStocking(null);load(meta.page)};
   return <div className="page"><section className="page-heading"><div><p className="eyebrow">QUẢN LÝ TỒN KHO</p><h1>Kho phụ tùng</h1><p>Quản lý mã, giá bán, tồn kho và cảnh báo dưới ngưỡng an toàn.</p></div><div className="heading-actions"><button className="btn secondary" onClick={onOpenAI}><Sparkles size={17}/> Trợ lý AI</button><button className="btn primary" onClick={()=>setEditing({})}><Plus size={18}/> Thêm phụ tùng</button></div></section>
     <section className="metrics"><StatCard icon={Package} label="Mã phụ tùng" value={meta.total} note="Theo bộ lọc hiện tại" color="blue"/><StatCard icon={CircleAlert} label="Sắp hết hàng" value={low.length} note="Trang hiện tại" color="orange"/><StatCard icon={CheckCircle2} label="Còn hàng an toàn" value={parts.filter(p=>Number(p.stock)>Number(p.min_stock)).length} note="Trên ngưỡng tối thiểu" color="green"/><StatCard icon={CircleDollarSign} label="Giá trị tồn kho" value={money(inventoryValue)} note="Trang hiện tại theo giá bán" color="violet"/></section>
-    <section className="card orders-card"><div className="card-title"><div><h2>Danh sách phụ tùng</h2><p>{meta.total} mã • Không cho phép tồn kho âm</p></div></div><div className="order-toolbar"><div className="filter-tabs"><button className={!filter?'active':''} onClick={()=>setFilter('')}>Tất cả</button><button className={filter==='Sắp hết'?'active':''} onClick={()=>setFilter('Sắp hết')}>Sắp hết</button></div><div className="order-search"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')load(1)}} placeholder="Tìm mã, tên, nhà cung cấp..."/><button className="btn ghost" onClick={()=>load(1)}>Tìm</button></div></div>{error&&<div className="inline-error"><CircleAlert size={15}/>{error}</div>}{loading?<div className="detail-loading"><i/><span>Đang tải kho...</span></div>:parts.length===0?<div className="empty-state"><Package size={30}/><strong>Không có phụ tùng phù hợp</strong><p>Thử thay đổi từ khóa hoặc bộ lọc.</p></div>:<div className="table-wrap"><table className="order-table"><thead><tr><th>MÃ / TÊN</th><th>NHÓM</th><th>GIÁ BÁN</th><th>TỒN KHO</th><th>NGƯỠNG</th><th>NHÀ CUNG CẤP</th><th/></tr></thead><tbody>{parts.map(part=><tr key={part.id}><td><strong className="order-code">{part.code}</strong><small>{part.name}</small></td><td>{part.category}</td><td><strong>{money(part.sell_price)}</strong><small>Giá nhập {money(part.cost_price)}</small></td><td><span className={`status ${Number(part.stock)<=Number(part.min_stock)?'orange':'green'}`}><i/>{part.stock} {part.unit}</span></td><td>{part.min_stock}</td><td>{part.supplier||'—'}</td><td><div className="row-actions"><button className="row-open" onClick={()=>setEditing(part)}><Pencil size={14}/> Sửa</button><button className="row-open" onClick={()=>setFitting(part)}><CarFront size={14}/> Cấu hình xe</button><button className="row-open" onClick={()=>setStocking(part)}><Plus size={14}/> Nhập</button></div></td></tr>)}</tbody></table></div>}<Pagination meta={meta} onPage={load}/></section>{editing!==null&&<PartModal part={editing.id?editing:undefined} onClose={()=>setEditing(null)} onSaved={saveAndClose}/>} {stocking&&<StockModal part={stocking} onClose={()=>setStocking(null)} onSaved={saveAndClose}/>}{fitting&&<PartFitmentsModal part={fitting} onClose={()=>setFitting(null)}/>}</div>;
+    <section className="card orders-card"><div className="card-title"><div><h2>Danh sách phụ tùng</h2><p>{meta.total} mã • Không cho phép tồn kho âm</p></div></div><div className="order-toolbar"><div className="filter-tabs"><button className={!filter?'active':''} onClick={()=>setFilter('')}>Tất cả</button><button className={filter==='Sắp hết'?'active':''} onClick={()=>setFilter('Sắp hết')}>Sắp hết</button></div><div className="order-search"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')load(1)}} placeholder="Tìm mã, tên, nhà cung cấp..."/><button className="btn ghost" onClick={()=>load(1)}>Tìm</button></div></div>{error&&<div className="inline-error"><CircleAlert size={15}/>{error}</div>}{loading?<div className="detail-loading"><i/><span>Đang tải kho...</span></div>:parts.length===0?<div className="empty-state"><Package size={30}/><strong>Không có phụ tùng phù hợp</strong><p>Thử thay đổi từ khóa hoặc bộ lọc.</p></div>:<div className="table-wrap"><table className="order-table"><thead><tr><th>MÃ / TÊN</th><th>NHÓM</th><th>GIÁ BÁN</th><th>TỒN KHO</th><th>NGƯỠNG</th><th>NHÀ CUNG CẤP</th><th/></tr></thead><tbody>{parts.map(part=><tr key={part.id}><td><strong className="order-code">{part.code}</strong><small>{part.name}</small><details className="part-data-notes"><summary>Lưu ý dữ liệu</summary><p><strong>Tương thích:</strong> {part.compatibility_accuracy||'Chưa có ghi chú'}</p><p><strong>Trước khi dùng:</strong> {part.usage_requirements||'Chưa có ghi chú'}</p><p><strong>Giá:</strong> {part.price_note||'Chưa có ghi chú'}</p><p><strong>Nhà cung cấp:</strong> {part.supplier_note||'Chưa có ghi chú'}</p></details></td><td>{part.category}</td><td><strong>{money(part.sell_price)}</strong><small>Giá nhập {money(part.cost_price)}</small></td><td><span className={`status ${Number(part.stock)<=Number(part.min_stock)?'orange':'green'}`}><i/>{part.stock} {part.unit}</span></td><td>{part.min_stock}</td><td>{part.supplier||'—'}</td><td><div className="row-actions"><button className="row-open" onClick={()=>setEditing(part)}><Pencil size={14}/> Sửa</button><button className="row-open" onClick={()=>setFitting(part)}><CarFront size={14}/> Cấu hình xe</button><button className="row-open" onClick={()=>setStocking(part)}><Plus size={14}/> Nhập</button></div></td></tr>)}</tbody></table></div>}<Pagination meta={meta} onPage={load}/></section>{editing!==null&&<PartModal part={editing.id?editing:undefined} onClose={()=>setEditing(null)} onSaved={saveAndClose}/>} {stocking&&<StockModal part={stocking} onClose={()=>setStocking(null)} onSaved={saveAndClose}/>}{fitting&&<PartFitmentsModal part={fitting} onClose={()=>setFitting(null)}/>}</div>;
 }
 
 function Pagination({meta,onPage}:{meta:{page:number;pages:number;total:number};onPage:(page:number)=>void}){if(meta.pages<=1)return null;return <div className="pagination"><button className="btn ghost" disabled={meta.page<=1} onClick={()=>onPage(meta.page-1)}>Trước</button><span>Trang {meta.page}/{meta.pages} • {meta.total} bản ghi</span><button className="btn ghost" disabled={meta.page>=meta.pages} onClick={()=>onPage(meta.page+1)}>Sau</button></div>}
 
-function PartModal({part,onClose,onSaved}:{part?:any,onClose:()=>void,onSaved:()=>void}){const [form,setForm]=useState({code:part?.code||'',name:part?.name||'',category:part?.category||'Phụ tùng',compatible:part?.compatible||'',unit:part?.unit||'cái',stock:part?.stock??0,min_stock:part?.min_stock??3,sell_price:part?.sell_price??0,cost_price:part?.cost_price??0,supplier:part?.supplier||'',active:part?.active!==0});const [error,setError]=useState('');const [saving,setSaving]=useState(false);async function save(e:React.FormEvent){e.preventDefault();setSaving(true);setError('');try{const body=part?(({stock,...editable})=>({...editable,code:form.code.toUpperCase(),cost_price:Number(form.cost_price),sell_price:Number(form.sell_price),min_stock:Number(form.min_stock),active:Boolean(form.active)}))(form):{...form,code:form.code.toUpperCase(),stock:Number(form.stock),min_stock:Number(form.min_stock),sell_price:Number(form.sell_price),cost_price:Number(form.cost_price)};const r=await api(part?`/api/parts/${part.id}`:'/api/parts',{method:part?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const info=await readApiError(r);throw new Error(info.message)}onSaved()}catch(err:any){setError(err.message)}finally{setSaving(false)}}return <div className="modal-overlay" onMouseDown={onClose}><form className="modal" onMouseDown={e=>e.stopPropagation()} onSubmit={save}><div className="modal-head"><div><p className="eyebrow">{part?'CẬP NHẬT':'DANH MỤC PHỤ TÙNG'}</p><h2>{part?'Chỉnh sửa phụ tùng':'Thêm phụ tùng'}</h2></div><button type="button" onClick={onClose}><X/></button></div><div className="field-row"><label>Mã phụ tùng<input required value={form.code} onChange={e=>setForm({...form,code:e.target.value.toUpperCase()})}/></label><label>Tên phụ tùng<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label></div><label>Nhóm phụ tùng<input value={form.category} onChange={e=>setForm({...form,category:e.target.value})}/></label><label>Xe tương thích<input value={form.compatible} onChange={e=>setForm({...form,compatible:e.target.value})}/></label><div className="field-row"><label>Giá nhập<input type="number" min="0" value={form.cost_price} onChange={e=>setForm({...form,cost_price:e.target.value as any})}/></label><label>Giá bán<input type="number" min="0" value={form.sell_price} onChange={e=>setForm({...form,sell_price:e.target.value as any})}/></label></div><div className="field-row"><label>{part?'Tồn kho hiện tại':'Số lượng nhập kho'}<input type="number" min="0" disabled={!!part} value={form.stock} onChange={e=>setForm({...form,stock:Number(e.target.value)})}/></label><label>Ngưỡng cảnh báo<input type="number" min="0" value={form.min_stock} onChange={e=>setForm({...form,min_stock:Number(e.target.value)})}/></label></div><label>Nhà cung cấp<input value={form.supplier} onChange={e=>setForm({...form,supplier:e.target.value})}/></label>{part&&<p className="work-hint">Tồn kho chỉ thay đổi qua giao dịch nhập/xuất/hoàn kho, không sửa trực tiếp.</p>}{error&&<div className="inline-error"><CircleAlert size={15}/>{error}</div>}<div className="modal-actions"><button type="button" className="btn secondary" onClick={onClose}>Hủy</button><button className="btn primary" disabled={saving}>{saving?'Đang lưu...':'Lưu phụ tùng'}</button></div></form></div>}
+function PartModal({part,onClose,onSaved}:{part?:any,onClose:()=>void,onSaved:()=>void}){const [form,setForm]=useState({code:part?.code||'',name:part?.name||'',category:part?.category||'Phụ tùng',compatible:part?.compatible||'',unit:part?.unit||'cái',stock:part?.stock??0,min_stock:part?.min_stock??3,sell_price:part?.sell_price??0,cost_price:part?.cost_price??0,supplier:part?.supplier||'',compatibility_accuracy:part?.compatibility_accuracy||'',usage_requirements:part?.usage_requirements||'',price_note:part?.price_note||'',supplier_note:part?.supplier_note||'',active:part?.active!==0});const [error,setError]=useState('');const [saving,setSaving]=useState(false);async function save(e:React.FormEvent){e.preventDefault();setSaving(true);setError('');try{const body=part?(({stock,...editable})=>({...editable,code:form.code.toUpperCase(),cost_price:Number(form.cost_price),sell_price:Number(form.sell_price),min_stock:Number(form.min_stock),active:Boolean(form.active)}))(form):{...form,code:form.code.toUpperCase(),stock:Number(form.stock),min_stock:Number(form.min_stock),sell_price:Number(form.sell_price),cost_price:Number(form.cost_price)};const r=await api(part?`/api/parts/${part.id}`:'/api/parts',{method:part?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const info=await readApiError(r);throw new Error(info.message)}onSaved()}catch(err:any){setError(err.message)}finally{setSaving(false)}}return <div className="modal-overlay" onMouseDown={onClose}><form className="modal" onMouseDown={e=>e.stopPropagation()} onSubmit={save}><div className="modal-head"><div><p className="eyebrow">{part?'CẬP NHẬT':'DANH MỤC PHỤ TÙNG'}</p><h2>{part?'Chỉnh sửa phụ tùng':'Thêm phụ tùng'}</h2></div><button type="button" onClick={onClose}><X/></button></div><div className="field-row"><label>Mã phụ tùng<input required value={form.code} onChange={e=>setForm({...form,code:e.target.value.toUpperCase()})}/></label><label>Tên phụ tùng<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label></div><label>Nhóm phụ tùng<input value={form.category} onChange={e=>setForm({...form,category:e.target.value})}/></label><label>Xe tương thích<input value={form.compatible} onChange={e=>setForm({...form,compatible:e.target.value})}/></label><div className="field-row"><label>Giá nhập<input type="number" min="0" value={form.cost_price} onChange={e=>setForm({...form,cost_price:e.target.value as any})}/></label><label>Giá bán<input type="number" min="0" value={form.sell_price} onChange={e=>setForm({...form,sell_price:e.target.value as any})}/></label></div><div className="field-row"><label>{part?'Tồn kho hiện tại':'Số lượng nhập kho'}<input type="number" min="0" disabled={!!part} value={form.stock} onChange={e=>setForm({...form,stock:Number(e.target.value)})}/></label><label>Ngưỡng cảnh báo<input type="number" min="0" value={form.min_stock} onChange={e=>setForm({...form,min_stock:Number(e.target.value)})}/></label></div><label>Nhà cung cấp<input value={form.supplier} onChange={e=>setForm({...form,supplier:e.target.value})}/></label><details className="part-note-fields" open><summary>Ghi chú dữ liệu</summary><label>Tính chính xác tương thích<textarea maxLength={500} value={form.compatibility_accuracy} onChange={e=>setForm({...form,compatibility_accuracy:e.target.value})}/></label><label>Trước khi sử dụng thực tế<textarea maxLength={500} value={form.usage_requirements} onChange={e=>setForm({...form,usage_requirements:e.target.value})}/></label><label>Ghi chú giá nhập/giá bán<textarea maxLength={500} value={form.price_note} onChange={e=>setForm({...form,price_note:e.target.value})}/></label><label>Ghi chú nhà cung cấp<textarea maxLength={500} value={form.supplier_note} onChange={e=>setForm({...form,supplier_note:e.target.value})}/></label></details>{part&&<p className="work-hint">Tồn kho chỉ thay đổi qua giao dịch nhập/xuất/hoàn kho, không sửa trực tiếp.</p>}{error&&<div className="inline-error"><CircleAlert size={15}/>{error}</div>}<div className="modal-actions"><button type="button" className="btn secondary" onClick={onClose}>Hủy</button><button className="btn primary" disabled={saving}>{saving?'Đang lưu...':'Lưu phụ tùng'}</button></div></form></div>}
 
 function StockModal({part,onClose,onSaved}:{part:any,onClose:()=>void,onSaved:()=>void}){const [amount,setAmount]=useState(1);const [saving,setSaving]=useState(false);const [error,setError]=useState('');async function save(e:React.FormEvent){e.preventDefault();setSaving(true);setError('');try{const key=`stock-in:${part.id}:${crypto.randomUUID()}`;const r=await api(`/api/parts/${part.id}/stock`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify({amount:Number(amount)})});if(!r.ok){const info=await readApiError(r);throw new Error(info.message)}onSaved()}catch(err:any){setError(err.message)}finally{setSaving(false)}}return <div className="modal-overlay" onMouseDown={onClose}><form className="modal" onMouseDown={e=>e.stopPropagation()} onSubmit={save}><div className="modal-head"><div><p className="eyebrow">GIAO DỊCH NHẬP KHO</p><h2>Nhập thêm phụ tùng</h2></div><button type="button" onClick={onClose}><X/></button></div><div className="stock-modal-item"><Package size={22}/><div><strong>{part.name}</strong><small>{part.code} • Tồn hiện tại: {part.stock}</small></div></div><label>Số lượng nhập thêm<input type="number" min="1" required value={amount} onChange={e=>setAmount(Number(e.target.value))}/></label>{error&&<div className="inline-error"><CircleAlert size={15}/>{error}</div>}<div className="modal-actions"><button type="button" className="btn secondary" onClick={onClose}>Hủy</button><button className="btn primary" disabled={saving}>{saving?'Đang ghi nhận...':'Xác nhận nhập kho'}</button></div></form></div>}
 
 function ServicesPage({onOpenAI}:{onOpenAI:()=>void}) {
   const [services,setServices]=useState<any[]>([]);const [meta,setMeta]=useState({total:0,pages:1,page:1});const [loading,setLoading]=useState(true);const [search,setSearch]=useState('');const [category,setCategory]=useState('');const [creating,setCreating]=useState(false);const [editing,setEditing]=useState<any>(null);const [error,setError]=useState('');
-  async function load(nextPage=meta.page){setLoading(true);try{const query=new URLSearchParams({page:String(nextPage),page_size:'20'});if(search.trim())query.set('q',search.trim());if(category)query.set('category',category);const r=await api(`/api/services?${query}`);if(!r.ok)throw new Error();const data=await r.json();setServices(data.items||[]);setMeta({total:data.total||0,pages:data.pages||1,page:data.page||nextPage});setError('')}catch{setError('Không tải được danh mục dịch vụ.')}finally{setLoading(false)}}useEffect(()=>{load(1)},[category]);const active=services.filter(s=>s.active).length;const avg=services.length?services.reduce((a,s)=>a+Number(s.price),0)/services.length:0;const categories=['','Bảo dưỡng','Sửa chữa','Chăm sóc xe','Gầm - lốp','Kiểm tra'];
+  async function load(nextPage=meta.page){setLoading(true);try{const query=new URLSearchParams({page:String(nextPage),page_size:'20'});if(search.trim())query.set('q',search.trim());if(category)query.set('category',category);const r=await api(`/api/services?${query}`);if(!r.ok)throw new Error();const data=await r.json();setServices(data.items||[]);setMeta({total:data.total||0,pages:data.pages||1,page:data.page||nextPage});setError('')}catch{setError('Không tải được danh mục dịch vụ.')}finally{setLoading(false)}}useEffect(()=>{load(1)},[category]);const active=services.filter(s=>s.active).length;const avg=services.length?services.reduce((a,s)=>a+Number(s.price),0)/services.length:0;const categories=['','Bảo dưỡng','Sửa chữa','Chăm sóc xe','Gầm','Lốp','Kiểm tra'];
   return <div className="page"><section className="page-heading"><div><p className="eyebrow">DANH MỤC XƯỞNG</p><h1>Dịch vụ</h1><p>CRUD danh mục dịch vụ, giá bán và thời gian thực hiện.</p></div><div className="heading-actions"><button className="btn secondary" onClick={onOpenAI}><Sparkles size={17}/> Trợ lý AI</button><button className="btn primary" onClick={()=>setCreating(true)}><Plus size={18}/> Thêm dịch vụ</button></div></section><section className="metrics"><StatCard icon={Wrench} label="Tổng dịch vụ" value={meta.total} note="Theo bộ lọc hiện tại" color="blue"/><StatCard icon={CheckCircle2} label="Đang hoạt động" value={active} note="Có thể thêm vào phiếu" color="green"/><StatCard icon={Clock3} label="Thời gian TB" value={services.length?`${Math.round(services.reduce((a,s)=>a+Number(s.duration_min),0)/services.length)} phút`:'0 phút'} note="Trang hiện tại" color="orange"/><StatCard icon={CircleDollarSign} label="Giá TB" value={money(avg)} note="Trang hiện tại" color="violet"/></section><section className="card orders-card"><div className="card-title"><div><h2>Danh mục dịch vụ</h2><p>{meta.total} dịch vụ • bật/tắt thay vì xóa cứng</p></div></div><div className="order-toolbar"><div className="filter-tabs">{categories.map(c=><button key={c||'all'} className={category===c?'active':''} onClick={()=>setCategory(c)}>{c||'Tất cả'}</button>)}</div><div className="order-search"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')load(1)}} placeholder="Tìm tên hoặc nhóm dịch vụ..."/><button className="btn ghost" onClick={()=>load(1)}>Tìm</button></div></div>{error&&<div className="inline-error"><CircleAlert size={15}/>{error}</div>}{loading?<div className="detail-loading"><i/><span>Đang tải dịch vụ...</span></div>:<div className="service-grid">{services.map(s=><article className={`service-card ${!s.active?'inactive':''}`} key={s.id}><div className="service-card-top"><span className="service-icon"><Wrench size={17}/></span><span className="service-status">{s.active?'Đang hoạt động':'Đã tắt'}</span></div><h3>{s.name}</h3><p>{s.description||'Chưa có mô tả dịch vụ.'}</p><div className="service-card-meta"><span>{s.category}</span><span>{s.duration_min} phút</span><strong>{money(s.price)}</strong></div><div className="service-card-actions"><button className="btn ghost" onClick={()=>setEditing(s)}><Pencil size={14}/> Sửa</button><button className="btn secondary" onClick={async()=>{const r=await api(`/api/services/${s.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({active:!s.active})});if(r.ok)load(meta.page)}}>{s.active?'Tắt':'Bật'}</button></div></article>)}</div>}<Pagination meta={meta} onPage={load}/></section>{(creating||editing)&&<ServiceModal service={editing||undefined} onClose={()=>{setCreating(false);setEditing(null)}} onSaved={()=>{setCreating(false);setEditing(null);load(meta.page)}}/>}</div>;
 }
 
@@ -1176,35 +1178,6 @@ function VehicleDrawer({vehicleId,onClose,onChanged}:{vehicleId:number;onClose:(
   </aside></div>;
 }
 
-function MyVehiclesPage({onOpenAI}:{onOpenAI:()=>void}) {
-  const [data,setData]=useState<any>(null);
-  const [error,setError]=useState('');
-  useEffect(()=>{ api('/api/my-vehicles').then(r=>{ if(!r.ok) throw new Error(); return r.json() }).then(setData).catch(()=>setError('Không tải được danh sách xe của bạn.')) },[]);
-  if(error) return <div className="page"><div className="inline-error"><CircleAlert size={15}/>{error}</div></div>;
-  if(!data) return <div className="page"><div className="detail-loading"><i/><span>Đang tải xe của bạn...</span></div></div>;
-  const vehicles=data.vehicles||[];
-  const openOrders=vehicles.reduce((sum:number,vehicle:any)=>sum+(vehicle.orders||[]).filter((order:any)=>!['COMPLETED','DELIVERED','CANCELLED'].includes(statusCodeOf(order))).length,0);
-  return <div className="page">
-    <section className="page-heading"><div><p className="eyebrow">GARAGE CỦA BẠN</p><h1>Xe của tôi</h1><p>Theo dõi phương tiện, lịch sử bảo dưỡng và lịch hẹn tại garage.</p></div><div className="heading-actions"><button className="btn secondary" onClick={onOpenAI}><Sparkles size={17}/> Trợ lý AI</button></div></section>
-    <section className="owner-summary card"><div className="owner-avatar">{initialsOf(data.customer?.full_name || data.customer?.name)}</div><div><p>CHỦ SỞ HỮU</p><h2>{data.customer?.full_name || data.customer?.name || 'Khách hàng'}</h2><span>{data.customer?.email || data.customer?.phone || 'Chưa cập nhật liên hệ'}</span></div><div className="owner-address"><MapPin size={15}/>{data.customer?.address || 'Chưa cập nhật địa chỉ'}</div></section>
-    <section className="metrics"><StatCard icon={CarFront} label="Xe của tôi" value={vehicles.length} note="Phương tiện đã đăng ký" color="blue"/><StatCard icon={ClipboardList} label="Phiếu đang mở" value={openOrders} note="Đang được garage xử lý" color="orange"/><StatCard icon={History} label="Lần bảo dưỡng" value={vehicles.reduce((sum:number,vehicle:any)=>sum+(vehicle.history||[]).length,0)} note="Lịch sử đã ghi nhận" color="green"/></section>
-    {vehicles.length===0 ? <div className="empty-state"><CarFront size={30}/><strong>Chưa có xe</strong><p>Liên hệ garage để cập nhật phương tiện của bạn.</p></div> : <div className="vehicle-list">{vehicles.map((vehicle:any)=><article className="card" key={vehicle.id} style={{padding:'16px 18px',marginTop:'12px'}}>
-      <div className="card-title" style={{padding:0,marginBottom:'10px'}}><div><h2>{vehicle.plate}</h2><p>{vehicle.make} {vehicle.model}{vehicle.year?` • ${vehicle.year}`:''}{vehicle.vin?` • VIN ${vehicle.vin}`:''}</p></div><span className="status navy"><i/>{vehicle.last_mileage || vehicle.history?.[0]?.mileage ? `${new Intl.NumberFormat('vi-VN').format(vehicle.last_mileage || vehicle.history?.[0]?.mileage)} km` : 'Chưa rõ km'}</span></div>
-      <div className="my-vehicle-spec-grid" aria-label={`Thông tin xe ${vehicle.plate}`}>
-        <div><small>Hãng</small><strong>{vehicle.make||'Chưa cập nhật'}</strong></div>
-        <div><small>Dòng xe</small><strong>{vehicle.model||'Chưa cập nhật'}</strong></div>
-        <div><small>Năm sản xuất</small><strong>{vehicle.year||'Chưa cập nhật'}</strong></div>
-        <div><small>Phiên bản</small><strong>{vehicle.variant||'Chưa cập nhật'}</strong></div>
-        <div><small>Mã động cơ</small><strong>{vehicle.engine_code||'Chưa cập nhật'}</strong></div>
-        <div><small>Loại nhiên liệu</small><strong>{vehicle.fuel_type||'Chưa cập nhật'}</strong></div>
-      </div>
-      {(vehicle.orders||[]).length>0 && <div className="table-wrap"><table className="order-table"><thead><tr><th>PHIẾU</th><th>NỘI DUNG</th><th>TRẠNG THÁI</th><th>TẠM TÍNH</th></tr></thead><tbody>{vehicle.orders.map((order:any)=><tr key={order.id}><td><strong className="order-code">{order.code}</strong></td><td><span className="note-cell">{order.note || '—'}</span></td><td><OrderStatus code={order.status_code} text={order.status}/></td><td><strong>{money(Number(order.total||0))}</strong></td></tr>)}</tbody></table></div>}
-      {(vehicle.history||[]).length>0 && <div className="work-section"><h3>Lịch sử bảo dưỡng</h3><ol className="order-history">{vehicle.history.slice(0,5).map((row:any)=><li key={`mh-${row.id}`}><i className="done"/><div><strong>{row.services || 'Bảo dưỡng'}</strong><small>{formatMoment(row.repaired_at)} • {row.mileage?`${new Intl.NumberFormat('vi-VN').format(row.mileage)} km`:'Không ghi km'}</small>{row.note&&<p>{row.note}</p>}</div></li>)}</ol></div>}
-    </article>)}</div>}
-  </div>;
-}
-
-
 const ORDER_STATUS_OPTIONS = [
   {code:'RECEIVED',label:'Tiếp nhận'},
   {code:'INSPECTING',label:'Đang kiểm tra'},
@@ -1383,6 +1356,7 @@ function RepairOrderDrawer({orderId,onClose,onChanged}:{orderId:number,onClose:(
   const [aiDraftSources,setAiDraftSources]=useState<AISource[]>([]);
   const [aiLoading,setAiLoading]=useState(false);
   const [quoteReviewId,setQuoteReviewId]=useState<number|null>(null);
+  const [quotePreview,setQuotePreview]=useState<({serviceIds:number[];partIds:number[];note:string}&import('./services/aiService').AIQuotePreview)|null>(null);
   const [pendingTransition,setPendingTransition]=useState<any>(null);
   const [transitionNote,setTransitionNote]=useState('');
   const partRequestKeys=useRef<Record<string,string>>({});
@@ -1561,12 +1535,23 @@ function RepairOrderDrawer({orderId,onClose,onChanged}:{orderId:number,onClose:(
       const serviceIds=selectedServiceIds;
       const partIds=selectedPartIds;
       if(serviceIds.length===0&&partIds.length===0){setError('Cần chọn ít nhất một dịch vụ hoặc phụ tùng từ database.');return}
-      const result=await AIService.createQuoteDraft({repair_order_id:orderId,service_item_ids:serviceIds,part_usage_ids:partIds});
-      setAiDraft(result.explanation);
-      setAiDraftSources(result.sources||[]);
-      await load(); onChanged(); setMessage(`Đã tạo ${result.code} ở trạng thái Nháp. Giá và tổng tiền do backend tính từ database.`);
+      const preview=await AIService.previewQuoteDraft({repair_order_id:orderId,service_item_ids:serviceIds,part_usage_ids:partIds});
+      setQuotePreview({...preview,serviceIds:[...serviceIds],partIds:[...partIds],note:preview.explanation});
+      setMessage('Đã tạo nội dung xem trước. Chưa lưu báo giá hoặc đổi trạng thái phiếu.');
     }catch(err:any){ setError(err.message||'Không tạo được báo giá.') }
     finally{ setSaving(false) }
+  }
+
+  async function saveQuotePreview(){
+    if(!quotePreview)return;
+    setSaving(true);setError('');setMessage('');
+    try{
+      const result=await AIService.saveQuoteDraft({repair_order_id:orderId,service_item_ids:quotePreview.serviceIds,part_usage_ids:quotePreview.partIds,
+        valid_until:quotePreview.valid_until,expected_total:quotePreview.total,explanation:quotePreview.note.trim()});
+      setQuotePreview(null);await load();onChanged();
+      setMessage(`Đã lưu ${result.code} ở trạng thái Nháp. Gửi duyệt là thao tác riêng.`);
+    }catch(err:any){setError(err.message||'Không lưu được báo giá nháp.');}
+    finally{setSaving(false)}
   }
 
   async function setQuoteStatus(quoteId:number,status:string){
@@ -1679,9 +1664,10 @@ function RepairOrderDrawer({orderId,onClose,onChanged}:{orderId:number,onClose:(
       {['COMPLETED','DELIVERED'].includes(currentCode) && <RepairKnowledgeCasePanel orderId={orderId} canPublish={canApproveQuote}/>}
       {nextStepGuidance&&<div className="workflow-next-hint"><ArrowUpRight size={17}/><div><strong>Bước tiếp theo</strong><p>{nextStepGuidance}</p></div></div>}
 
-      <div className="work-section">
-        <h3>Hạng mục dịch vụ</h3>
-        {items.length === 0 ? <p className="work-empty">Chưa có hạng mục nào. Thêm dịch vụ hoặc phụ tùng để tính chi phí.</p>
+      <div className="work-section service-work-section">
+        <h3><Wrench size={16} aria-hidden="true"/> Dịch vụ &amp; tiền công</h3>
+        <p className="work-hint">Chọn công việc từ danh mục dịch vụ; thêm tại đây không làm thay đổi tồn kho.</p>
+        {items.length === 0 ? <p className="work-empty">Chưa có dịch vụ trên phiếu. Chọn dịch vụ bên dưới để ghi nhận tiền công.</p>
         : <div className="item-table-wrap"><table className="item-table">
             <thead><tr><th>CHỌN BÁO GIÁ</th><th>LOẠI</th><th>TÊN HẠNG MỤC</th><th>SL</th><th>GIÁ TRÊN PHIẾU</th><th>THÀNH TIỀN</th><th>THỰC TẾ</th><th/></tr></thead>
             <tbody>{items.map((item:any)=><tr key={item.id}>
@@ -1696,17 +1682,18 @@ function RepairOrderDrawer({orderId,onClose,onChanged}:{orderId:number,onClose:(
             </tr>)}</tbody>
           </table></div>}
         {editable && <form className="item-form service-catalog-form" onSubmit={addItem}>
-          <select value={itemForm.service_id} onChange={e=>setItemForm({...itemForm,service_id:e.target.value})}>
-            <option value="">Chọn dịch vụ từ database</option>{services.map((service:any)=><option key={service.id} value={service.id}>{service.name} • {money(Number(service.price))}</option>)}
-          </select>
-          <input type="number" min="0.5" step="0.5" value={itemForm.quantity} onChange={e=>setItemForm({...itemForm,quantity:e.target.value})} aria-label="Số lượng"/>
-          <button className="btn secondary" disabled={saving||!itemForm.service_id}><Plus size={15}/> Thêm dịch vụ</button>
+          <label>Dịch vụ<select value={itemForm.service_id} onChange={e=>setItemForm({...itemForm,service_id:e.target.value})}>
+            <option value="">Chọn dịch vụ</option>{services.map((service:any)=><option key={service.id} value={service.id}>{service.name} • {money(Number(service.price))}</option>)}
+          </select></label>
+          <label>Số lượng<input type="number" min="0.5" step="0.5" value={itemForm.quantity} onChange={e=>setItemForm({...itemForm,quantity:e.target.value})}/></label>
+          <button className="btn secondary" disabled={saving||!itemForm.service_id}><Plus size={15}/> Ghi dịch vụ</button>
         </form>}
       </div>
 
-      <div className="work-section">
-        <h3>Phụ tùng đã sử dụng</h3>
-        {partsUsed.length === 0 ? <p className="work-empty">Chưa ghi nhận phụ tùng. Thêm từ kho để trừ tồn kho và tính vào chi phí.</p>
+      <div className="work-section parts-work-section">
+        <h3><Package size={16} aria-hidden="true"/> Phụ tùng xuất kho</h3>
+        <p className="work-hint">Chỉ ghi phụ tùng thực tế đã dùng cho xe. Thao tác này trừ tồn kho và ghi chi phí lên phiếu.</p>
+        {partsUsed.length === 0 ? <p className="work-empty">Chưa xuất phụ tùng cho phiếu này. Nếu công việc không cần thay phụ tùng, có thể bỏ qua.</p>
         : <div className="item-table-wrap"><table className="item-table">
             <thead><tr><th>CHỌN BÁO GIÁ</th><th>MÃ</th><th>TÊN PHỤ TÙNG</th><th>SL</th><th>GIÁ TRÊN PHIẾU</th><th>THÀNH TIỀN</th><th/></tr></thead>
             <tbody>{partsUsed.map((item:any)=><tr key={item.id}>
@@ -1720,12 +1707,12 @@ function RepairOrderDrawer({orderId,onClose,onChanged}:{orderId:number,onClose:(
             </tr>)}</tbody>
           </table></div>}
         {editable && <form className="item-form part-form" onSubmit={addPart}>
-          <select value={partForm.part_id} onChange={e=>setPartForm({...partForm,part_id:e.target.value})}>
-            <option value="">Chọn phụ tùng từ kho</option>
+          <label>Phụ tùng trong kho<select value={partForm.part_id} onChange={e=>setPartForm({...partForm,part_id:e.target.value})}>
+            <option value="">Chọn phụ tùng còn hàng</option>
             {parts.filter((part:any)=>Number(part.stock) > 0).map((part:any)=><option key={part.id} value={part.id}>{part.name} • {part.code} • tồn {part.stock}</option>)}
-          </select>
-          <input type="number" min="1" step="1" value={partForm.quantity} onChange={e=>setPartForm({...partForm,quantity:e.target.value})} aria-label="Số lượng phụ tùng"/>
-          <button className="btn secondary" disabled={saving || !partForm.part_id}><Plus size={15}/> Thêm phụ tùng</button>
+          </select></label>
+          <label>Số lượng xuất<input type="number" min="1" step="1" value={partForm.quantity} onChange={e=>setPartForm({...partForm,quantity:e.target.value})}/></label>
+          <button className="btn secondary" disabled={saving || !partForm.part_id}><Plus size={15}/> Xuất phụ tùng</button>
         </form>}
       </div>
 
@@ -1735,16 +1722,18 @@ function RepairOrderDrawer({orderId,onClose,onChanged}:{orderId:number,onClose:(
         {(selectedServiceIds.length>0||selectedPartIds.length>0)&&<div className="quote-selection-preview"><strong>Đang chọn {selectedServiceIds.length} dịch vụ và {selectedPartIds.length} phụ tùng</strong><span>Tiền công tham khảo: {money(selectedLabor)} • Phụ tùng tham khảo: {money(selectedParts)}{selectedMinutes>0?` • Thời lượng danh mục: ${workTime(selectedMinutes)}`:''}</span><small>Giá và thời lượng chính thức trên bản nháp do backend đọc lại; chưa gồm thời gian chờ phụ tùng.</small></div>}
         {quotes.length === 0 ? <p className="work-empty">Chưa có báo giá. Tạo báo giá nháp từ hạng mục và phụ tùng của phiếu.</p>
         : <div className="quote-list">{quotes.map((quote:any)=><div className="quote-card" key={quote.id}>
-            <div><strong>{quote.code}</strong><small>Phiên bản {quote.version} • {formatMoment(quote.created_at)}{quote.estimated_duration_min?` • khoảng ${workTime(Number(quote.estimated_duration_min))}`:''}</small></div>
+            <div><strong>{quote.code}</strong><small>Phiên bản {quote.version} • Tạo: {formatMoment(quote.created_at)}{quote.estimated_duration_min?` • khoảng ${workTime(Number(quote.estimated_duration_min))}`:''}</small><small>Hết hạn: {formatMoment(quote.valid_until)} • Hiệu lực: {quote.validity_status==='expired'?'Đã hết hạn':quote.validity_status==='valid'?'Còn hiệu lực':'Chưa xác định'}</small></div>
+            {quote.status==='Chờ duyệt'&&quote.validity_status!=='valid'&&<small className="quote-validity-warning">Không thể duyệt: {quote.validity_status==='expired'?'báo giá đã hết hạn':'báo giá chưa có hạn hiệu lực'}. Hãy tạo phiên bản mới.</small>}
             <span className={`quote-status ${quote.status === 'Đã duyệt' ? 'approved' : quote.status === 'Từ chối' || quote.status === 'Hết hiệu lực' ? 'expired' : 'pending'}`}>{quote.status}</span>
             <strong className="quote-total">{money(Number(quote.total || 0))}</strong>
             <div className="quote-actions">
               <button type="button" className="row-open" onClick={()=>setQuoteReviewId(quote.id)}>Xem &amp; chỉnh diễn giải</button>
               {quote.status === 'Nháp' && editable && <button type="button" className="row-open" disabled={saving} onClick={()=>setQuoteStatus(quote.id,'Chờ duyệt')}>Gửi duyệt</button>}
-              {canApproveQuote && quote.status === 'Chờ duyệt' && !['DELIVERED','CANCELLED','COMPLETED'].includes(currentCode) && <button type="button" className="row-quick" disabled={saving} onClick={()=>setQuoteStatus(quote.id,'Đã duyệt')}>Duyệt báo giá</button>}
+              {canApproveQuote && quote.status === 'Chờ duyệt' && !['DELIVERED','CANCELLED','COMPLETED'].includes(currentCode) && <button type="button" className="row-quick" disabled={saving||quote.validity_status!=='valid'||currentCode!=='QUOTED'||quote.id!==quotes[0]?.id} title={quote.validity_status!=='valid'?'Không thể duyệt: báo giá đã hết hạn hoặc chưa có hạn. Hãy tạo phiên bản mới.':currentCode!=='QUOTED'?'Chuyển phiếu sang Đã báo giá trước khi duyệt.':quote.id!==quotes[0]?.id?'Chỉ duyệt phiên bản mới nhất.':''} onClick={()=>setQuoteStatus(quote.id,'Đã duyệt')}>Duyệt báo giá</button>}
             </div>
           </div>)}</div>}
-        {editable && <div className="work-actions"><button type="button" className="btn secondary" onClick={createQuote} disabled={saving||!(selectedServiceIds.length||selectedPartIds.length)}><Sparkles size={15}/>{saving?'Đang tạo...':'Tạo báo giá nháp, AI diễn giải'}</button></div>}
+        {editable && <div className="work-actions"><button type="button" className="btn secondary" onClick={createQuote} disabled={saving||!(selectedServiceIds.length||selectedPartIds.length)}><Sparkles size={15}/>{saving?'Đang tạo nội dung...':'Tạo báo giá nháp bằng AI'}</button></div>}
+        {quotePreview&&<div className="quote-preview"><strong>Nội dung AI đề xuất — chưa lưu</strong><p>Giá hệ thống: tạm tính {money(quotePreview.subtotal)} • chiết khấu {money(quotePreview.discount)} • thuế {money(quotePreview.tax)} • tổng {money(quotePreview.total)}</p><p>Hết hạn dự kiến: {formatMoment(quotePreview.valid_until)} (giờ Việt Nam)</p><label>Kiểm tra và chỉnh diễn giải<textarea rows={8} maxLength={4000} value={quotePreview.note} onChange={e=>setQuotePreview({...quotePreview,note:e.target.value})}/></label><div className="work-actions"><button type="button" className="btn primary" disabled={saving||!quotePreview.note.trim()} onClick={saveQuotePreview}>Lưu báo giá nháp</button><button type="button" className="btn secondary" disabled={saving} onClick={()=>setQuotePreview(null)}>Bỏ bản xem trước</button></div><small>Giá và hạng mục được kiểm tra lại lúc lưu; AI không duyệt báo giá.</small></div>}
         <p className="work-hint">Duyệt báo giá là thao tác nhạy cảm: báo giá phải có hạng mục, tổng tiền &gt; 0 và phiếu đã ở bước “Đã báo giá”.</p>
       </div>
 
@@ -1791,7 +1780,7 @@ function QuoteDraftReview({quoteId,onClose,onSaved}:{quoteId:number;onClose:()=>
     const updated=await response.json();setQuote(updated);setNote(updated.note||'');onSaved();
   }catch(err:any){setError(err.message||'Không lưu được diễn giải.')}finally{setBusy(false)}}
   return <div className="quote-review-overlay" onMouseDown={onClose}><section className="quote-review-panel" role="dialog" aria-modal="true" aria-label="Kiểm tra báo giá nháp" onMouseDown={event=>event.stopPropagation()}>
-    <header><div><h2>{quote?.code||'Đang tải báo giá...'}</h2><small>{quote?.status} • Giá được chốt tại thời điểm tạo nháp</small></div><button type="button" onClick={onClose} aria-label="Đóng"><X size={18}/></button></header>
+    <header><div><h2>{quote?.code||'Đang tải báo giá...'}</h2><small>{quote?.status} • Giá được chốt tại thời điểm tạo nháp</small><small>Tạo: {formatMoment(quote?.created_at)} • Hết hạn: {formatMoment(quote?.valid_until)} • {quote?.validity_status==='expired'?'Đã hết hạn':quote?.validity_status==='valid'?'Còn hiệu lực':'Chưa xác định hiệu lực'}</small></div><button type="button" onClick={onClose} aria-label="Đóng"><X size={18}/></button></header>
     {error&&<div className="inline-error"><CircleAlert size={15}/>{error}</div>}
     {quote&&<div className="quote-review-content"><table><thead><tr><th>Hạng mục</th><th>SL</th><th>Thành tiền</th></tr></thead><tbody>{(quote.items||[]).map((item:any)=><tr key={item.id}><td>{item.name}</td><td>{item.quantity}</td><td>{money(item.line_total)}</td></tr>)}</tbody></table>
       <EstimatedWorkTime document={quote}/><div className="quote-review-totals"><span>Tạm tính: {money(quote.subtotal)}</span><span>Chiết khấu: {money(quote.discount)}</span><span>Thuế: {money(quote.tax)}</span><strong>Tổng: {money(quote.total)}</strong></div>

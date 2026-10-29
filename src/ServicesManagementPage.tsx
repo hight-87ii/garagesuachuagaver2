@@ -6,7 +6,7 @@ import {
 
 type Props={apiBase:string;onOpenAI:()=>void};
 type Service={id:number;name:string;category:string;description:string;price:number;duration_min:number;active:number|boolean};
-const categories=['Tất cả','Bảo dưỡng','Sửa chữa','Chăm sóc xe','Gầm - lốp','Kiểm tra'];
+const categories=['Tất cả','Bảo dưỡng','Sửa chữa','Chăm sóc xe','Gầm','Lốp','Kiểm tra'];
 const emptyForm={name:'',category:'Bảo dưỡng',description:'',price:'',duration_min:60,active:true};
 const money=(value:number)=>new Intl.NumberFormat('vi-VN').format(Number(value||0))+' ₫';
 

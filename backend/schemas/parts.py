@@ -18,6 +18,10 @@ class PartIn(RecordModel):
     stock: int = Field(default=0, ge=0)
     min_stock: int = Field(default=3, ge=0)
     supplier: str = Field(default="", max_length=120)
+    compatibility_accuracy: str = Field(default="", max_length=500)
+    usage_requirements: str = Field(default="", max_length=500)
+    price_note: str = Field(default="", max_length=500)
+    supplier_note: str = Field(default="", max_length=500)
 
 
 class PartStockIn(RecordModel):
@@ -63,6 +67,10 @@ class PartUpdate(RecordModel):
     sell_price: int | None = Field(default=None, ge=0)
     min_stock: int | None = Field(default=None, ge=0)
     supplier: str | None = Field(default=None, max_length=120)
+    compatibility_accuracy: str | None = Field(default=None, max_length=500)
+    usage_requirements: str | None = Field(default=None, max_length=500)
+    price_note: str | None = Field(default=None, max_length=500)
+    supplier_note: str | None = Field(default=None, max_length=500)
     active: bool | None = None
 
 
@@ -78,4 +86,8 @@ class PartOut(RecordModel):
     stock: int | None = None
     min_stock: int | None = None
     supplier: str | None = None
+    compatibility_accuracy: str | None = None
+    usage_requirements: str | None = None
+    price_note: str | None = None
+    supplier_note: str | None = None
     active: int | None = None

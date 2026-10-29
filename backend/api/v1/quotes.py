@@ -16,10 +16,12 @@ from ...core.errors import BadRequestError, NotFoundError
 from ...duration import quote_duration, service_duration
 from ...core.pagination import PageParams, envelope, fetch_page, page_params
 from ...money import DEFAULT_DISCOUNT_RATE, DEFAULT_TAX_RATE, line_total, tax_for, to_vnd
+from ...quote_validity import approval_validity_error, validity_state
 from ...schemas.common import Page
 from ...schemas.quotes import (
     AIQuoteDraftIn,
     AIQuoteDraftOut,
+    AIQuotePreviewOut,
     QuoteCreatedOut,
     QuoteDetailOut,
     QuoteIn,
@@ -49,10 +51,8 @@ def _quote_valid_until(value: str | None, db=None) -> str:
 
 
 def _expire_if_needed(db, quote: dict) -> dict:
-    if quote.get("valid_until") and quote["valid_until"] <= now_utc_iso() and quote["status"] not in ("Từ chối", "Hết hiệu lực"):
-        db.execute("UPDATE quotes SET status='Hết hiệu lực' WHERE id=?", (quote["id"],))
-        quote = {**quote, "status": "Hết hiệu lực"}
-    return quote
+    # Hiệu lực là trạng thái độc lập; đọc dữ liệu không được sửa lịch sử duyệt.
+    return {**quote, "validity_status": validity_state(quote.get("valid_until"))}
 
 
 def _selected_database_lines(db, item: AIQuoteDraftIn) -> tuple[list[dict], int, int]:
@@ -95,6 +95,63 @@ def _selected_database_lines(db, item: AIQuoteDraftIn) -> tuple[list[dict], int,
     return lines, labor, part_total
 
 
+def _narrative_context(order, lines: list[dict], duration: int | None) -> dict:
+    technical_parts = [value.strip() for value in
+                       (order["inspection_notes"], order["customer_request"])
+                       if (value or "").strip()]
+    return {
+        "repair_order": {"id": order["id"], "code": order["code"]},
+        "items": [{"source_item_id": f"{'service' if row['kind'] == 'Dịch vụ' else 'part'}:{row['source_id']}",
+                   "kind": row["kind"], "name": row["name"],
+                   "description": (row["description"] or "")[:500],
+                   "estimated_duration_min": row["estimated_duration_min"]} for row in lines],
+        "estimated_duration_min": duration,
+        "technical_context": " • ".join(dict.fromkeys(technical_parts))[:1500],
+    }
+
+
+def _generate_narrative(context: dict) -> tuple[AIResult, str | None]:
+    try:
+        return ai_service.create_quote_narrative(context), None
+    except Exception:
+        return AIResult(ai_service._fallback_quote_narrative(context), "error", "local", ai_service.model), "provider_unavailable"
+
+
+@router.post("/ai-draft/preview", response_model=AIQuotePreviewOut)
+def preview_ai_quote_draft(
+    item: AIQuoteDraftIn,
+    user: dict = Depends(require_permission("repair_orders")),
+) -> dict:
+    """Không lưu báo giá; giá được đọc lại khi người dùng xác nhận lưu."""
+    with connect() as db:
+        order = db.execute("SELECT * FROM repair_orders WHERE id=?", (item.repair_order_id,)).fetchone()
+        if not order:
+            raise NotFoundError("Không tìm thấy phiếu sửa chữa")
+        ensure_record_access(db, user, order["customer_id"])
+        if order_status_code(order) in ("COMPLETED", "DELIVERED", "CANCELLED"):
+            raise BadRequestError("Phiếu đã kết thúc, không thể tạo báo giá")
+        lines, labor, parts = _selected_database_lines(db, item)
+        duration_values = []
+        for row in lines:
+            minutes, _ = (service_duration(db, row["service_id"], row["name"], row["quantity"])
+                          if row["kind"] == "Dịch vụ" else (None, None))
+            row["estimated_duration_min"] = minutes
+            if minutes is not None:
+                duration_values.append(minutes)
+        duration = sum(duration_values) if duration_values else None
+        valid_until = _quote_valid_until(item.valid_until, db)
+    subtotal = labor + parts
+    discount = tax_for(subtotal, DEFAULT_DISCOUNT_RATE)
+    taxable = max(0, subtotal - discount)
+    tax = tax_for(taxable, DEFAULT_TAX_RATE)
+    generated, _ = _generate_narrative(_narrative_context(order, lines, duration))
+    return {"subtotal": subtotal, "labor_subtotal": labor, "parts_subtotal": parts,
+            "discount": discount, "tax": tax, "total": taxable + tax,
+            "tax_rate": float(DEFAULT_TAX_RATE), "valid_until": valid_until,
+            "estimated_duration_min": duration, "ai_status": generated.status,
+            "explanation": generated.content}
+
+
 @router.post("/ai-draft", status_code=201, response_model=AIQuoteDraftOut)
 def create_ai_quote_draft(
     item: AIQuoteDraftIn,
@@ -107,6 +164,7 @@ def create_ai_quote_draft(
         order = db.execute("SELECT * FROM repair_orders WHERE id=?", (item.repair_order_id,)).fetchone()
         if not order:
             raise NotFoundError("Không tìm thấy phiếu sửa chữa")
+        ensure_record_access(db, user, order["customer_id"])
         if order_status_code(order) in ("COMPLETED", "DELIVERED", "CANCELLED"):
             raise BadRequestError("Phiếu đã kết thúc, không thể tạo báo giá")
         lines, labor_subtotal, parts_subtotal = _selected_database_lines(db, item)
@@ -115,6 +173,8 @@ def create_ai_quote_draft(
         taxable = max(0, subtotal - discount)
         tax = tax_for(taxable, DEFAULT_TAX_RATE)
         total = taxable + tax
+        if item.expected_total is not None and total != item.expected_total:
+            raise BadRequestError("Giá đã thay đổi kể từ lúc xem trước. Vui lòng tạo lại bản xem trước.")
         version = db.execute(
             "SELECT COALESCE(MAX(version), 0) + 1 FROM quotes WHERE repair_order_id=?",
             (item.repair_order_id,),
@@ -150,24 +210,11 @@ def create_ai_quote_draft(
 
     # Gọi AI sau khi báo giá tài chính đã commit: provider lỗi không làm mất báo giá.
     # Lời giải thích dành cho khách: không đưa ghi chú nội bộ vào prompt/provider.
-    technical_parts = [value.strip() for value in
-                       (order["inspection_notes"], order["customer_request"])
-                       if (value or "").strip()]
-    ai_context = {
-        "repair_order": {"id": order["id"], "code": order["code"], "plate": order["plate"]},
-        "items": [{"kind": row["kind"], "name": row["name"],
-                   "description": row["description"] or "",
-                   "estimated_duration_min": row["estimated_duration_min"]} for row in lines],
-        "estimated_duration_min": duration,
-        "technical_context": " • ".join(dict.fromkeys(technical_parts)),
-    }
-    error_text = None
-    try:
-        generated = ai_service.create_quote_narrative(ai_context)
-    except Exception as exc:  # báo giá đã tồn tại; chỉ hạ cấp phần diễn giải
-        error_text = str(exc)
-        generated = AIResult(ai_service._fallback_quote_narrative(ai_context), "error",
-                             "local", ai_service.model)
+    ai_context = _narrative_context(order, lines, duration)
+    if item.explanation is not None:
+        generated, error_text = AIResult(item.explanation.strip(), "success", "staff", "reviewed"), None
+    else:
+        generated, error_text = _generate_narrative(ai_context)
     with connect() as db, transaction(db):
         db.execute("UPDATE quotes SET note=? WHERE id=?", (generated.content, quote_id))
         prompt_hash = hashlib.sha256(json.dumps(
@@ -280,6 +327,7 @@ def create_quote(
         order = db.execute("SELECT * FROM repair_orders WHERE id=?", (item.repair_order_id,)).fetchone()
         if not order:
             raise NotFoundError("Không tìm thấy phiếu sửa chữa")
+        ensure_record_access(db, user, order["customer_id"])
         if order_status_code(order) in ("DELIVERED", "CANCELLED"):
             raise BadRequestError("Phiếu đã kết thúc, không thể tạo báo giá.")
         version = db.execute(
@@ -343,6 +391,14 @@ def update_quote_status(
         if not quote:
             raise NotFoundError("Không tìm thấy báo giá")
         quote = _expire_if_needed(db, dict(quote))
+        if item.status == "Đã duyệt":
+            ensure_role(user, ("Admin", "Quản lý"), message="Chỉ Admin/Quản lý được duyệt báo giá.")
+            latest = db.execute("SELECT id FROM quotes WHERE repair_order_id=? ORDER BY version DESC, id DESC LIMIT 1", (quote["repair_order_id"],)).fetchone()
+            if latest["id"] != quote_id:
+                raise BadRequestError("Đây không phải phiên bản báo giá mới nhất; vui lòng xử lý phiên bản mới.")
+            error = approval_validity_error(quote["valid_until"])
+            if error:
+                raise BadRequestError(error)
         order = db.execute(
             "SELECT * FROM repair_orders WHERE id=?", (quote["repair_order_id"],)
         ).fetchone()
@@ -367,7 +423,7 @@ def update_quote_status(
                 message="Chỉ Admin/Quản lý được duyệt báo giá.",
             )
             code = order_status_code(order)
-            if code in ("RECEIVED", "INSPECTING"):
+            if code != "QUOTED":
                 raise BadRequestError(
                     "Hãy chuyển phiếu sang trạng thái Đã báo giá trước khi duyệt báo giá."
                 )
@@ -387,6 +443,10 @@ def update_quote_status(
 
         approved_by = user["id"] if item.status == "Đã duyệt" else quote["approved_by"]
         approved_at = now_utc_iso() if item.status == "Đã duyệt" else quote["approved_at"]
+        if item.status == "Đã duyệt":
+            error = approval_validity_error(quote["valid_until"])
+            if error:
+                raise BadRequestError(error)
         db.execute(
             "UPDATE quotes SET status=?, approved_by=?, approved_at=? WHERE id=?",
             (item.status, approved_by, approved_at, quote_id),

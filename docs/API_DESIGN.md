@@ -409,7 +409,7 @@ Trường `error.details` của `409` luôn cho biết `reason`
   vấn thêm; kết quả luôn kèm `is_draft: true` và cần kỹ thuật viên xác nhận.
 - Nội dung prompt **không** được lưu; chỉ lưu `prompt_hash`, trạng thái, model và thời gian
   xử lý để kiểm toán.
-- Khi thiếu `OPENAI_API_KEY`, hệ thống trả bản nháp an toàn với `status: "fallback"`.
+- Các tác vụ cần tạo sinh gọi Ollama cục bộ; không dùng `OPENAI_API_KEY` hoặc OpenAI từ xa. Một số tác vụ có phản hồi dự phòng an toàn khi mô hình không khả dụng.
 
 ## 8. Kiểm thử
 

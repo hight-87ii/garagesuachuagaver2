@@ -1,8 +1,10 @@
 """Module phương tiện (xe) và tra cứu xe của khách hàng."""
 
+import re
+
 from fastapi import APIRouter, Depends, Query, Request
 
-from ...core.access import customer_for_user, ensure_record_access
+from ...core.access import customer_for_user, ensure_record_access, ensure_role
 from ...core.audit import write_audit
 from ...core.db import connect, normalize_plate, transaction
 from ...core.deps import client_ip, require_permission
@@ -17,8 +19,10 @@ from ...schemas.vehicles import (
     VehicleIn,
     VehicleOut,
     VehicleUpdate,
+    VehicleProfileUpdate,
 )
 from ...timeutil import vn_text
+from ...timeutil import now_utc_iso
 
 router = APIRouter(prefix="/vehicles", tags=["Vehicles"])
 my_router = APIRouter(prefix="/my-vehicles", tags=["Vehicles"])
@@ -398,11 +402,51 @@ def my_vehicles(user: dict = Depends(require_permission("my_vehicles"))) -> dict
             "SELECT * FROM vehicles WHERE customer_id=? ORDER BY plate", (customer["id"],)
         ).fetchall()]
         result = []
+        known_makes = [row[0] for row in db.execute("SELECT DISTINCT make FROM vehicles WHERE TRIM(make)<>''")]
         for vehicle in vehicles:
             vehicle_id = vehicle["id"]
             history = [dict(row) for row in db.execute(
-                "SELECT * FROM repair_history WHERE vehicle_id=? ORDER BY repaired_at DESC", (vehicle_id,)
+                """SELECT rh.*, ro.code AS order_code, ro.status AS order_status,
+                          COALESCE(ro.received_at,ro.opened_at,ro.created_at) AS received_at,
+                           ro.status_code AS order_status_code, ro.plate AS linked_order_plate,
+                           ro.inspection_notes,
+                          ro.initial_condition, ro.customer_request
+                   FROM repair_history rh LEFT JOIN repair_orders ro
+                     ON ro.id=rh.repair_order_id AND ro.vehicle_id=rh.vehicle_id
+                   WHERE rh.vehicle_id=? ORDER BY rh.repaired_at DESC""", (vehicle_id,)
             ).fetchall()]
+            for item in history:
+                issues = []
+                if item["repair_order_id"] and not item["order_code"]:
+                    issues.append("Liên kết phiếu không khớp xe; nhân viên cần đối chiếu phiếu gốc")
+                if item["order_code"] and normalize_plate(item["linked_order_plate"] or "") != normalize_plate(vehicle["plate"]):
+                    issues.append("Biển số trên phiếu khác hồ sơ xe; cần đối chiếu")
+                if normalize_plate(item["plate"] or "") != normalize_plate(vehicle["plate"]):
+                    issues.append("Biển số trong lịch sử khác hồ sơ xe; cần đối chiếu")
+                if item["repair_order_id"] and item["order_code"]:
+                    item["items"] = [dict(row) for row in db.execute(
+                        "SELECT kind,name,quantity FROM repair_order_items WHERE repair_order_id=? ORDER BY id",
+                        (item["repair_order_id"],)).fetchall()]
+                    item["parts"] = [dict(row) for row in db.execute(
+                        "SELECT name,quantity FROM repair_order_parts WHERE repair_order_id=? ORDER BY id",
+                        (item["repair_order_id"],)).fetchall()]
+                    invoice = db.execute(
+                        "SELECT code FROM invoices WHERE repair_order_id=? AND status<>'Đã hủy' ORDER BY id DESC LIMIT 1",
+                        (item["repair_order_id"],)).fetchone()
+                    quote = db.execute(
+                        "SELECT code FROM quotes WHERE repair_order_id=? ORDER BY version DESC,id DESC LIMIT 1",
+                        (item["repair_order_id"],)).fetchone()
+                    item["invoice_code"] = invoice["code"] if invoice else None
+                    item["quote_code"] = quote["code"] if quote else None
+                else:
+                    item["items"], item["parts"] = [], []
+                described = " ".join([item["services"] or "", *[part["name"] for part in item["parts"]]])
+                for make in known_makes:
+                    if make.casefold() != vehicle["make"].casefold() and re.search(
+                            rf"(?<!\w){re.escape(make)}(?!\w)", described, re.IGNORECASE):
+                        issues.append("Mô tả nhắc đến hãng xe khác; cần đối chiếu phiếu gốc")
+                        break
+                item["review_flags"] = issues
             orders = [dict(row) for row in db.execute(
                 "SELECT id, code, plate, status, status_code, note, total FROM repair_orders "
                 "WHERE vehicle_id=? ORDER BY id DESC LIMIT 5",
@@ -417,9 +461,75 @@ def my_vehicles(user: dict = Depends(require_permission("my_vehicles"))) -> dict
                 item["appointment_at"] = vn_text(item["appointment_at"])
             result.append({
                 **vehicle,
+                "profile": dict(db.execute("SELECT * FROM vehicle_profiles WHERE vehicle_id=?",
+                                           (vehicle_id,)).fetchone() or {}),
                 "history": history,
                 "orders": orders,
                 "appointments": appointments,
                 "lifetime_value": sum(int(item["total"] or 0) for item in history),
             })
     return {"customer": customer, "vehicles": result}
+
+
+_OWNER_PROFILE_FIELDS = {
+    "color", "mileage", "first_registration_year", "vehicle_type", "seat_count",
+    "door_count", "registration_info", "inspection_expires_at",
+    "liability_insurance_expires_at", "comprehensive_insurance_expires_at",
+}
+
+
+def _save_profile(db, vehicle_id: int, fields: dict, user: dict, request: Request) -> dict:
+    vehicle = db.execute("SELECT id,customer_id,mileage,year FROM vehicles WHERE id=?", (vehicle_id,)).fetchone()
+    if not vehicle:
+        raise NotFoundError("Không tìm thấy xe")
+    ensure_record_access(db, user, vehicle["customer_id"])
+    if not fields:
+        raise BadRequestError("Không có dữ liệu cập nhật")
+    if (fields.get("first_registration_year") is not None and vehicle["year"] is not None
+            and fields["first_registration_year"] < vehicle["year"]):
+        raise BadRequestError("Năm đăng ký lần đầu không thể trước năm sản xuất")
+    vehicle_fields = {key: fields.pop(key) for key in ("color", "mileage") if key in fields}
+    if "mileage" in vehicle_fields:
+        mileage = vehicle_fields["mileage"]
+        recorded = db.execute("SELECT MAX(mileage) FROM repair_history WHERE vehicle_id=?",
+                              (vehicle_id,)).fetchone()[0]
+        if mileage is None or mileage < max(vehicle["mileage"] or 0, recorded or 0):
+            raise BadRequestError("Số km mới không được thấp hơn số km đã ghi trong hồ sơ")
+        fields["mileage_updated_at"] = now_utc_iso()
+    if any(key in fields for key in ("next_service_at", "next_service_mileage")):
+        existing = db.execute("SELECT maintenance_source FROM vehicle_profiles WHERE vehicle_id=?",
+                              (vehicle_id,)).fetchone()
+        if not (fields.get("maintenance_source") or (existing and existing[0])):
+            raise BadRequestError("Cần nguồn lịch bảo dưỡng đã xác minh trước khi đặt mốc tiếp theo")
+    if vehicle_fields:
+        db.execute(f"UPDATE vehicles SET {', '.join(key + '=?' for key in vehicle_fields)} WHERE id=?",
+                   (*vehicle_fields.values(), vehicle_id))
+    db.execute("INSERT OR IGNORE INTO vehicle_profiles(vehicle_id) VALUES(?)", (vehicle_id,))
+    if fields:
+        fields["updated_at"] = now_utc_iso()
+        db.execute(f"UPDATE vehicle_profiles SET {', '.join(key + '=?' for key in fields)} WHERE vehicle_id=?",
+                   (*fields.values(), vehicle_id))
+    write_audit(db, user, "vehicle.profile.update", "vehicles", vehicle_id,
+                {"fields": list(vehicle_fields) + list(fields)}, client_ip(request))
+    return {"vehicle": dict(db.execute("SELECT * FROM vehicles WHERE id=?", (vehicle_id,)).fetchone()),
+            "profile": dict(db.execute("SELECT * FROM vehicle_profiles WHERE vehicle_id=?",
+                                       (vehicle_id,)).fetchone())}
+
+
+@my_router.patch("/{vehicle_id}/profile")
+def update_my_vehicle_profile(vehicle_id: int, item: VehicleProfileUpdate, request: Request,
+                              user: dict = Depends(require_permission("my_vehicles"))) -> dict:
+    fields = item.model_dump(exclude_unset=True, mode="json")
+    if set(fields) - _OWNER_PROFILE_FIELDS:
+        raise BadRequestError("Thông số kỹ thuật và lịch bảo dưỡng cần garage xác minh")
+    with connect() as db, transaction(db):
+        return _save_profile(db, vehicle_id, fields, user, request)
+
+
+@router.patch("/{vehicle_id}/profile")
+def update_vehicle_profile(vehicle_id: int, item: VehicleProfileUpdate, request: Request,
+                           user: dict = Depends(require_permission("vehicles"))) -> dict:
+    ensure_role(user, ("Admin", "Quản lý", "Kỹ thuật viên"),
+                message="Chỉ nhân sự kỹ thuật hoặc quản lý được xác minh thông số và lịch bảo dưỡng")
+    with connect() as db, transaction(db):
+        return _save_profile(db, vehicle_id, item.model_dump(exclude_unset=True, mode="json"), user, request)

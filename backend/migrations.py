@@ -1018,6 +1018,66 @@ def migration_026(db) -> None:
             BEGIN DELETE FROM knowledge_vectors WHERE source_type='repair_case' AND source_id=old.id; END""")
 
 
+def migration_027(db) -> None:
+    """Explicit approval for a catalog selling price; legacy prices stay unapproved.
+
+    A changed parts.sell_price never matches the approved snapshot and must be
+    reviewed again. No existing price or stock is modified by this migration.
+    """
+    db.execute("""CREATE TABLE IF NOT EXISTS part_price_approvals (
+        part_id INTEGER PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
+        approved_sell_price INTEGER NOT NULL CHECK(approved_sell_price > 0),
+        approved_by INTEGER NOT NULL REFERENCES users(id),
+        source TEXT NOT NULL CHECK(length(trim(source)) > 0),
+        approved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    )""")
+    db.execute("""CREATE TRIGGER IF NOT EXISTS part_price_approval_invalidate
+        AFTER UPDATE OF sell_price ON parts
+        WHEN new.sell_price IS NOT old.sell_price
+        BEGIN DELETE FROM part_price_approvals WHERE part_id=new.id; END""")
+
+
+def migration_028(db) -> None:
+    """Optional owner-facing vehicle profile; no technical values are inferred or backfilled."""
+    db.execute("""CREATE TABLE IF NOT EXISTS vehicle_profiles (
+        vehicle_id INTEGER PRIMARY KEY REFERENCES vehicles(id) ON DELETE CASCADE,
+        first_registration_year INTEGER CHECK(first_registration_year BETWEEN 1900 AND 2100),
+        vehicle_type TEXT, seat_count INTEGER CHECK(seat_count BETWEEN 1 AND 60),
+        door_count INTEGER CHECK(door_count BETWEEN 1 AND 10),
+        transmission TEXT, drivetrain TEXT, displacement_cc INTEGER CHECK(displacement_cc > 0),
+        power_kw REAL CHECK(power_kw > 0), torque_nm REAL CHECK(torque_nm > 0),
+        fuel_consumption TEXT, fuel_tank_liters REAL CHECK(fuel_tank_liters > 0),
+        tire_size TEXT, tire_pressure TEXT, oil_capacity_liters REAL CHECK(oil_capacity_liters > 0),
+        oil_spec TEXT, registration_info TEXT,
+        inspection_expires_at TEXT, liability_insurance_expires_at TEXT,
+        comprehensive_insurance_expires_at TEXT,
+        mileage_updated_at TEXT,
+        next_service_at TEXT, next_service_mileage INTEGER CHECK(next_service_mileage >= 0),
+        maintenance_source TEXT, maintenance_items TEXT,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    )""")
+
+
+def migration_029(db) -> None:
+    """Preserve all historical documents and odometer readings, including demo records."""
+    add_columns(db, "vehicle_profiles", [("maintenance_items", "maintenance_items TEXT")])
+
+
+def migration_030(db) -> None:
+    """Store the engine serial separately from the engine model/code."""
+    add_columns(db, "vehicle_profiles", [("engine_number", "engine_number TEXT")])
+
+
+def migration_031(db) -> None:
+    """Keep catalogue limitations explicit instead of overloading compatibility text."""
+    add_columns(db, "parts", [
+        ("compatibility_accuracy", "compatibility_accuracy TEXT NOT NULL DEFAULT ''"),
+        ("usage_requirements", "usage_requirements TEXT NOT NULL DEFAULT ''"),
+        ("price_note", "price_note TEXT NOT NULL DEFAULT ''"),
+        ("supplier_note", "supplier_note TEXT NOT NULL DEFAULT ''"),
+    ])
+
+
 MIGRATIONS = [
     (1, "001_initial_schema", migration_001),
     (2, "002_upgrade_legacy_core", migration_002),
@@ -1045,6 +1105,11 @@ MIGRATIONS = [
     (24, "024_repair_knowledge_cases", migration_024),
     (25, "025_technical_article_revisions", migration_025),
     (26, "026_local_knowledge_vectors", migration_026),
+    (27, "027_part_price_approvals", migration_027),
+    (28, "028_vehicle_profiles", migration_028),
+    (29, "029_repair_demo_vehicle_history", migration_029),
+    (30, "030_vehicle_engine_number", migration_030),
+    (31, "031_part_data_notes", migration_031),
 ]
 
 

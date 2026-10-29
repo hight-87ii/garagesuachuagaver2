@@ -98,6 +98,16 @@ Endpoint `/api/v1/ai/assistant/chat` cũ được giữ để tương thích, nh
 
 ## AI tra cứu tồn kho
 
+Tên của 5 sản phẩm thực tế đã đối chiếu với trang nhà sản xuất được lưu dưới dạng
+**bản ghi chưa kích hoạt** (không phải hàng đang có ở garage). Nguồn và cách nạp
+thêm nằm trong [docs/MARKET_PART_NAMES.md](docs/MARKET_PART_NAMES.md).
+
+Danh mục kho minh họa `PT001–PT200` được quản lý trong
+`backend/pt_inventory_data.py`. Chạy `python -m backend.pt_inventory_data` để thêm
+hoặc đồng bộ đúng 200 mã; tồn kho và ngưỡng tối thiểu được sinh ổn định theo mã.
+Giá trong danh mục này là giá minh họa do người dùng cung cấp, chưa tự động tạo
+phê duyệt giá AI hoặc quy tắc lắp vừa theo xe.
+
 - Chat lưu hội thoại và `/api/v1/ai/assistant/chat` tra trực tiếp `parts.stock`, `parts.min_stock` của **kho tổng** tại lúc hỏi; chỉ mặt hàng `active=1` được tính. Hết hàng = `stock=0`; sắp hết = `0<stock<=min_stock`; không có ngưỡng thì không kết luận sắp hết. Kết quả giới hạn 20 dòng (hoặc số lượng yêu cầu, tối đa 50), có mã mặt hàng và nguồn theo ID.
 - Phân quyền `inventory.view`, `inventory.view_all`, `inventory.view_low_stock`, `inventory.view_statistics`, `inventory.recommend_restock` độc lập với quyền giá vốn, giá trị và giao dịch. Hiện Admin và Quản lý có đủ quyền; Kỹ thuật viên được xem tồn và khoảng thiếu đến mức tối thiểu, không xem giá vốn. Các vai trò khác không được truy cập. Người chỉ có `inventory.view_statistics` chỉ nhận tổng hợp, không có chi tiết.
 - Chỉ lọc hãng/dòng xe theo `part_fitments` đã nhập; trường mô tả `compatible` không xác nhận lắp vừa. Không có bảng kho/chi nhánh, dữ liệu giữ chỗ, nhu cầu phụ tùng chưa xuất hay mức tồn mục tiêu: không tính tồn khả dụng/thiếu theo phiếu hoặc số nhập đến mục tiêu. `repair_order_parts` ghi nhận hàng **đã xuất** và stock đã bị trừ; không trừ lần nữa. “Thiếu để đạt tối thiểu” là khoảng chênh lệch tham khảo, không phải đơn nhập.
@@ -188,18 +198,18 @@ Endpoint `/api/v1/ai/assistant/chat` cũ được giữ để tương thích, nh
 - Trong **Kho phụ tùng → Cấu hình xe**, nhân viên có quyền kho nhập quy tắc lắp vừa cho từng mã phụ tùng: hãng/dòng xe, khoảng năm và tùy chọn phiên bản, mã động cơ, nhiên liệu. Chỉ nhập thông tin đã đối chiếu với tài liệu hãng/OEM. API tương ứng: `GET/PUT /api/v1/parts/{id}/fitments`.
 - Chat ưu tiên quy tắc này; phụ tùng không khớp bị loại. Nếu chưa có quy tắc, nội dung `compatible` cũ chỉ tạo **gợi ý sơ bộ**, không phải xác nhận lắp vừa. Giá và tồn kho tra tại thời điểm hỏi, không giữ hàng; kỹ thuật viên phải xác nhận mã phụ tùng/VIN và tình trạng xe trước khi đề nghị thay thế.
 
-- Không có `OPENAI_API_KEY`: hệ thống dùng phản hồi demo an toàn để vẫn chạy được.
-- Có API key: sao chép `.env.example` thành `.env`, điền key vào `OPENAI_API_KEY`.
-- API key chỉ nằm ở backend, không gửi xuống trình duyệt và `.env` đã được bỏ qua bởi Git.
+- Mọi lời gọi mô hình đều dùng Ollama cục bộ; không cần hoặc sử dụng `OPENAI_API_KEY`.
+- Sao chép `.env.example` thành `.env`; `.env` đã được bỏ qua bởi Git.
 
 **Trả lời bằng mô hình cục bộ:** chạy Ollama trên chính máy backend, tải mô hình
 `ollama pull qwen2.5:7b`, đặt `AI_PROVIDER=ollama` và
 `OLLAMA_CHAT_MODEL=qwen2.5:7b` trong `.env`, rồi khởi động lại backend.
-Backend gọi `http://127.0.0.1:11434/v1` qua giao diện tương thích OpenAI;
-không cần `OPENAI_API_KEY` và không gửi ngữ cảnh cho dịch vụ AI ngoài. Tìm nguồn
+Backend gọi trực tiếp `http://127.0.0.1:11434/api/chat` của Ollama;
+không gửi ngữ cảnh cho dịch vụ AI ngoài. Tìm nguồn
 FTS5/vector và kiểm tra quyền vẫn thực hiện tại backend trước khi gọi mô hình.
 Nếu Ollama không chạy, yêu cầu tạo sinh sẽ báo lỗi; kiểm tra Ollama và mô hình
-đã tải. Để dùng lại OpenAI, đặt `AI_PROVIDER=openai` và cấu hình key.
+đã tải. `AI_PROVIDER=openai` không còn được hỗ trợ; nếu Ollama không chạy, các tác vụ
+cần tạo sinh sẽ báo lỗi thay vì gửi dữ liệu đến dịch vụ khác.
 
 Prompt hệ thống yêu cầu AI chỉ dựa trên dữ liệu được cung cấp, không tự chẩn đoán và luôn đánh dấu nội dung là bản nháp cần kỹ thuật viên xác nhận.
 
@@ -263,7 +273,7 @@ GET  /api/v1/ai/knowledge/search?q=lọc+cọc     # xem mục technical đã du
 
 ### Giải thích dịch vụ theo phiếu/hóa đơn
 
-Các endpoint `POST /api/v1/ai/service-explanations/{order_code}`, `POST /api/v1/ai/repair-orders/{id}/service-explanation` và `POST /api/v1/ai/invoices/{id}/service-explanation` tái sử dụng context đã kiểm tra quyền ở backend. Diễn giải tiền, trạng thái và phụ tùng được dựng tất định từ chứng từ kể cả khi có `OPENAI_API_KEY`; thiếu key không còn bị hiển thị là lỗi `fallback` của tác vụ này. Trường `data_status` mới (`sourced`, `partial`, `no_data`, `error`) là metadata tùy chọn, tương thích client cũ. Chat hỏi tiếp cũng chỉ đọc cùng phiếu/hóa đơn, không cho model sinh giá hay cam kết bảo hành. Tương thích phụ tùng chỉ có thể kiểm tra bằng mã liên kết với `part_fitments` và cấu hình xe; tên gợi ý hãng khác chỉ là cảnh báo cần kiểm tra, không chứng minh sai. Schema hiện không có chính sách bảo hành xác nhận hay mô tả công dụng phụ tùng độc lập, nên cần đề xuất schema và quy trình duyệt trước khi khai báo các nội dung này là đã xác minh. Không có migration cho nâng cấp này.
+Các endpoint `POST /api/v1/ai/service-explanations/{order_code}`, `POST /api/v1/ai/repair-orders/{id}/service-explanation` và `POST /api/v1/ai/invoices/{id}/service-explanation` tái sử dụng context đã kiểm tra quyền ở backend. Diễn giải tiền, trạng thái và phụ tùng được dựng tất định từ chứng từ, không phụ thuộc Ollama. Trường `data_status` mới (`sourced`, `partial`, `no_data`, `error`) là metadata tùy chọn, tương thích client cũ. Chat hỏi tiếp cũng chỉ đọc cùng phiếu/hóa đơn, không cho model sinh giá hay cam kết bảo hành. Tương thích phụ tùng chỉ có thể kiểm tra bằng mã liên kết với `part_fitments` và cấu hình xe; tên gợi ý hãng khác chỉ là cảnh báo cần kiểm tra, không chứng minh sai. Schema hiện không có chính sách bảo hành xác nhận hay mô tả công dụng phụ tùng độc lập, nên cần đề xuất schema và quy trình duyệt trước khi khai báo các nội dung này là đã xác minh. Không có migration cho nâng cấp này.
 
 **Đề xuất dữ liệu (chưa triển khai):** cần chính sách bảo hành được duyệt, có phạm vi dịch vụ/phụ tùng, thời hạn, điều kiện, ngoại lệ và phiên bản gắn chứng từ; ghi nhận hoàn thành theo từng dòng phiếu với người xác nhận/thời điểm/chứng cứ; mô tả công dụng phụ tùng có nguồn và trạng thái duyệt. Chỉ bổ sung sau khi garage thống nhất workflow và phân quyền; không tự ghi nhận từ câu trả lời AI.
 
@@ -303,6 +313,15 @@ POST /api/v1/repair-orders/{id}/knowledge-case/unpublish        # thu hồi kh�
 ```
 
 ## Kiểm thử
+
+### Báo giá nháp AI và hạn hiệu lực
+
+- Trong **Phiếu sửa chữa → Báo giá**, chọn dịch vụ/phụ tùng đã ghi trên phiếu rồi bấm **Tạo báo giá nháp bằng AI**. Đây chỉ là bản xem trước: chưa tạo bản ghi và chưa chuyển trạng thái phiếu. Kiểm tra tiền, hạn, nội dung diễn giải và bấm **Lưu báo giá nháp** để tạo phiên bản mới. Giá được đọc và tính lại khi lưu; nếu tổng đã đổi, cần tạo lại bản xem trước.
+- Báo giá mới dùng `quote_valid_days` trong Cài đặt hệ thống (mặc định hiện có: 7 ngày), hoặc hạn hợp lệ được gửi lúc tạo. Hạn lưu UTC; giao diện hiển thị theo giờ Việt Nam. Chỉ chỉnh diễn giải khi còn Nháp; đổi hạn/hạng mục bằng cách tạo phiên bản mới.
+- Trạng thái nghiệp vụ (`Nháp`, `Chờ duyệt`, `Đã duyệt`...) và hiệu lực (`Còn hiệu lực`, `Đã hết hạn`, `Chưa xác định`) là hai thông tin khác nhau. Báo giá cũ thiếu hạn không bị gán hạn giả; bản đã duyệt được giữ nguyên. Bản Nháp/Chờ duyệt thiếu hạn không được duyệt, hãy tạo phiên bản mới.
+- Chỉ Admin/Quản lý duyệt phiên bản mới nhất khi phiếu đã **Đã báo giá**, có hạng mục, tổng > 0 và hạn còn hiệu lực. Backend kiểm tra lại trong transaction kể cả khi gọi API trực tiếp.
+- Kiểm tra thủ công: tạo phiếu → bắt đầu kiểm tra → thêm dịch vụ → xem trước (xác nhận danh sách báo giá chưa đổi) → lưu → gửi duyệt → chuyển phiếu sang Đã báo giá → duyệt. Thử tạo bản hết hạn / báo giá thiếu hạn trong môi trường test và gọi trực tiếp `PATCH /api/v1/quotes/{id}/status` hoặc `POST /api/v1/repair-orders/{id}/transition` để xác minh bị chặn; không sửa dữ liệu sản xuất để thử hạn.
+
 
 ```bash
 pytest backend/tests -q

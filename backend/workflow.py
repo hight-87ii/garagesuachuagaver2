@@ -20,7 +20,9 @@ import sqlite3
 from typing import Any
 
 from .core.errors import BadRequestError
+from .core.access import ensure_role
 from .domain import record_repair_history
+from .quote_validity import approval_validity_error, validity_state
 from .timeutil import now_utc_iso
 
 #: Định nghĩa trạng thái chuẩn. ``step`` dùng cho thanh tiến trình trên UI.
@@ -205,9 +207,6 @@ def _quote_state(db: sqlite3.Connection, order_id: int) -> dict:
         ).fetchall()
     ]
     now = now_utc_iso()
-    for row in rows:
-        if row.get("valid_until") and row["valid_until"] <= now and row["status"] not in ("Từ chối", "Hết hiệu lực"):
-            row["status"] = "Hết hiệu lực"
     approved = next((row for row in rows if row["status"] == "Đã duyệt"), None)
     open_quote = next(
         (row for row in rows if row["status"] in ("Nháp", "Chờ duyệt")), None
@@ -218,6 +217,8 @@ def _quote_state(db: sqlite3.Connection, order_id: int) -> dict:
             for row in rows
             if row["status"] in ("Nháp", "Chờ duyệt", "Đã duyệt")
             and int(row["total"] or 0) > 0
+            and (validity_state(row["valid_until"], now) == "valid"
+                 or (row["status"] == "Đã duyệt" and not row["valid_until"]))
         ),
         None,
     )
@@ -299,6 +300,17 @@ def transition_blockers(
             blockers.append(
                 _blocker("newer_quote_open", "Có báo giá mới hơn chưa được duyệt. Hãy xử lý báo giá mới trước.")
             )
+
+    if target == "APPROVED" and quotes["approved"]:
+        latest = quotes["latest"]
+        if latest and latest["id"] != quotes["approved"]["id"]:
+            blockers.append(_blocker("newer_quote", "Có phiên bản báo giá mới hơn; hãy xử lý phiên bản mới trước."))
+        item_count = db.execute("SELECT COUNT(*) FROM quote_items WHERE quote_id=?", (quotes["approved"]["id"],)).fetchone()[0]
+        if not item_count or int(quotes["approved"]["total"] or 0) <= 0:
+            blockers.append(_blocker("invalid_quote", "Báo giá phải có hạng mục và tổng tiền lớn hơn 0."))
+        error = approval_validity_error(quotes["approved"]["valid_until"])
+        if error:
+            blockers.append(_blocker("quote_expired" if validity_state(quotes["approved"]["valid_until"]) == "expired" else "quote_validity_unknown", error))
 
     if target in ("IN_PROGRESS", "WAITING_FOR_PARTS", "COMPLETED"):
         if not quotes["approved"]:
@@ -413,6 +425,9 @@ def change_status(
     target = resolve_status_code(target_code, "Trạng thái đích")
     note = (note or "").strip()
 
+    if target == "APPROVED":
+        ensure_role(user, ("Admin", "Quản lý"), message="Chỉ Admin/Quản lý được duyệt báo giá và phiếu.")
+
     if target in NOTE_REQUIRED and len(note) < 2:
         raise BadRequestError(
             "Vui lòng nhập lý do khi chuyển sang trạng thái này.",
@@ -440,6 +455,11 @@ def change_status(
     elif target == "CANCELLED":
         fields.extend(["closed_at=?", "cancel_reason=?"])
         params.extend([now, note])
+    if target == "APPROVED":
+        current_quote = _quote_state(db, order_id)["approved"]
+        error = approval_validity_error(current_quote["valid_until"] if current_quote else None)
+        if error:
+            raise BadRequestError(error)
     db.execute(
         f"UPDATE repair_orders SET {', '.join(fields)} WHERE id=?",
         (*params, order_id),

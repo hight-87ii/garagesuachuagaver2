@@ -4,6 +4,7 @@ Schema hiện tại là một kho tổng, không có giữ chỗ, mức mục ti
 phụ tùng chưa xuất kho. repair_order_parts đã trừ stock khi ghi nhận sử dụng.
 """
 
+import os
 import re
 from datetime import datetime
 
@@ -12,6 +13,11 @@ from .permissions import has_permission
 from .timeutil import VN_TZ
 
 DENIED = "Bạn không có quyền truy cập thông tin tồn kho này. Vui lòng liên hệ quản trị viên để được cấp quyền phù hợp."
+
+
+def _catalog_mode() -> str:
+    """Mặc định production; demo phải được bật rõ ràng bằng cấu hình môi trường."""
+    return os.getenv("CATALOG_MODE", "production").strip().casefold()
 
 
 def is_inventory_question(question: str) -> bool:
@@ -25,6 +31,202 @@ def is_inventory_question(question: str) -> bool:
         "tinh trang ton", "tinh trang kho", "muc tieu", "giu cho", "thong ke",
     ))
     return subject and intent
+
+
+def is_part_price_question(question: str) -> bool:
+    """Nhận diện hỏi giá phụ tùng, tách khỏi luồng tra tồn kho."""
+    text = ai_service._normalize_vi(question)
+    subject = any(term in text for term in (
+        "lop", "vo xe", "bugi", "phanh", "ma phanh", "dia phanh", "bo phanh",
+        "phu tung", "linh kien", "ma phu tung", "ma hang",
+    ))
+    intent = any(term in text for term in (
+        "gia", "bao nhieu", "bao nhiêu", "het bao nhieu", "tien",
+    ))
+    return subject and intent
+
+
+def answer_catalog_parts_question(db, question: str, user: dict):
+    """Tra cứu dạng danh mục: đếm/ liệt kê/ so sánh các nhóm phụ tùng."""
+    text = ai_service._normalize_vi(question)
+    wants_battery = any(term in text for term in ("ac quy", "acquy", "binh ac quy"))
+    wants_tire = bool(re.search(r"\b(lop|vo xe|tire)\b", text))
+    intent = any(term in text for term in (
+        "may loai", "co nhung", "nhung loai", "bao nhieu loai", "liet ke",
+        "so sanh", "khac nhau", "lua chon", "danh sach",
+    ))
+    if not (intent and (wants_battery or wants_tire)):
+        return None
+
+    rows = [dict(row) for row in db.execute(
+        """SELECT id,code,name,category,unit,sell_price,supplier FROM parts
+           WHERE active=1 ORDER BY name,code"""
+    )]
+    if wants_battery:
+        rows = [row for row in rows if re.search(r"\b(ac quy|acquy|binh ac quy)\b",
+                                                  ai_service._normalize_vi(row["name"]))
+                and not re.search(r"\b(day cap|coc binh|cam bien)\b",
+                                  ai_service._normalize_vi(row["name"]))]
+        subject = "ắc quy"
+    else:
+        rows = [row for row in rows if re.search(r"\b(lop|vo xe|tire)\b",
+                                                  ai_service._normalize_vi(row["name"]))
+                and not re.search(r"\b(van lop|cam bien ap suat|tpms)\b",
+                                  ai_service._normalize_vi(row["name"]))]
+        subject = "lốp"
+    if not rows:
+        return (AIResult(f"Hiện chưa có sản phẩm {subject} phù hợp trong danh mục đang hoạt động.",
+                         "no_data", "local", ai_service.model, True,
+                         [f"Danh mục {subject}"]), [])
+
+    # Chỉ hiển thị giá nếu snapshot giá đã được duyệt; không biến sell_price
+    # chưa duyệt thành giá bán công khai.
+    approved = {}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='part_price_approvals'").fetchone():
+        approved = {row["part_id"]: row["approved_sell_price"] for row in db.execute(
+            "SELECT part_id,approved_sell_price FROM part_price_approvals")}
+    lines = []
+    for row in rows:
+        price = (f" · {int(row['sell_price']):,} ₫/{row['unit']}".replace(",", ".")
+                 if row["id"] in approved and approved[row["id"]] == row["sell_price"] else
+                 " · chưa có giá bán được duyệt")
+        lines.append(f"- {row['name']} ({row['code']}){price}")
+    lead = (f"Garage hiện có {len(rows)} loại {subject}:" if any(term in text for term in
+             ("may loai", "bao nhieu loai", "co nhung")) else
+            f"Các lựa chọn {subject} đang có trong danh mục garage:")
+    suffix = ("\nCó thể so sánh tiếp theo kích thước, thương hiệu hoặc giá đã duyệt."
+              if wants_tire and "so sanh" in text else "")
+    sources = [{"type": "part", "id": row["id"],
+                "label": f"Danh mục phụ tùng: {row['name']} ({row['code']})"}
+               for row in rows]
+    return AIResult(lead + "\n" + "\n".join(lines) + suffix,
+                    "fallback", "local", ai_service.model), sources
+
+
+def answer_part_price_question(db, question: str, user: dict, vehicle: dict | None = None):
+    """Only disclose prices explicitly approved for the current catalog snapshot."""
+    if not is_part_price_question(question):
+        return None
+    text = ai_service._normalize_vi(question)
+    wants_tire = bool(re.search(r"\b(lop|vo xe)\b", text))
+    wants_brake = bool(re.search(r"\b(phanh|ma phanh|dia phanh|bo phanh)\b", text))
+    # Câu hỏi chung về "phụ tùng xe tôi" cần đi qua nhánh yêu cầu xe/
+    # hồ sơ; không biến nó thành yêu cầu liệt kê toàn bộ danh mục có giá.
+    if not wants_tire and any(term in text for term in ("xe toi", "xe cua toi", "xe minh")):
+        return None
+    size = re.search(r"\b\d{3}\s*/?\s*\d{2}\s*r\s*\d{2}\b", text, re.I)
+    size_text = re.sub(r"\s+", "", size.group(0)).upper() if size else ""
+    brands = [brand for brand in (
+        "michelin", "bridgestone", "goodyear", "continental", "yokohama",
+        "dunlop", "kumho", "hankook", "maxxis",
+    ) if brand in text]
+    # A running backend may not yet have applied migration 027. Fail closed;
+    # never treat sell_price alone as approval.
+    approvals_available = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='part_price_approvals'"
+    ).fetchone() is not None
+    rows = [dict(row) for row in db.execute(
+        ("SELECT p.id,p.code,p.name,p.category,p.compatible,p.unit,p.sell_price,p.supplier, "
+         "a.approved_sell_price FROM parts p LEFT JOIN part_price_approvals a ON a.part_id=p.id "
+         "WHERE p.active=1 ORDER BY p.name,p.code" if approvals_available else
+         "SELECT id,code,name,category,compatible,unit,sell_price,supplier, "
+         "NULL approved_sell_price FROM parts WHERE active=1 ORDER BY name,code")
+    ).fetchall()]
+
+    def searchable(row):
+        return ai_service._normalize_vi(" ".join(
+            str(row.get(key) or "") for key in ("name", "category", "compatible", "code")
+        ))
+
+    if wants_tire:
+        rows = [row for row in rows if re.search(
+            r"\b(lop|vo xe|tire)\b",
+            ai_service._normalize_vi(str(row["name"]))) and not re.search(
+                r"\b(giam xoc|ro tuyn|bi moay|can bang|va lop)\b",
+                ai_service._normalize_vi(str(row["name"])))]
+    elif wants_brake:
+        rows = [row for row in rows if re.search(
+            r"\b(phanh|ma phanh|dia phanh|bo phanh)\b",
+            ai_service._normalize_vi(f"{row['name']} {row['category']}"))]
+    elif "bugi" in text:
+        rows = [row for row in rows if "bugi" in ai_service._normalize_vi(str(row["name"]))]
+    else:
+        # Generic "giá linh kiện" is not permission to disclose every part.
+        rows = [row for row in rows if ai_service._normalize_vi(str(row["name"])) in text
+                or ai_service._normalize_vi(str(row["code"])) in text
+                or ai_service._normalize_vi(str(row["category"])) in text]
+    if size_text:
+        compact = size_text.casefold()
+        rows = [row for row in rows if compact in re.sub(r"\s+", "", searchable(row)).upper().casefold()]
+    if brands:
+        rows = [row for row in rows if any(brand in searchable(row) for brand in brands)]
+    # Text in compatible/name is not a verified fitment rule. No tire size is
+    # stored on the vehicle record: do not infer one from make/model alone.
+
+    if not rows:
+        hint = (f" kích thước {size_text}" if size_text else "")
+        return (AIResult(
+            ("Chưa tìm thấy lốp" + hint if wants_tire else
+             "Chưa tìm thấy phụ tùng phanh" if wants_brake else
+             "Chưa tìm thấy phụ tùng được hỏi") +
+            " trong danh mục phụ tùng đang hoạt động. "
+            "Bạn có thể cung cấp tên/mã sản phẩm hoặc kích thước ghi trên hông lốp để garage tra đúng mã.",
+            "no_data", "local", ai_service.model,
+             True, ["Kích thước hoặc mã lốp" if wants_tire else
+                    "Mã hoặc loại phụ tùng phanh" if wants_brake else "Tên hoặc mã phụ tùng"]), [])
+
+    demo_mode = _catalog_mode() == "demo"
+    priced = [row for row in rows
+              if row["sell_price"] is not None and int(row["sell_price"]) > 0
+              and ((demo_mode and (row["code"].upper().startswith("DEMO-")
+                                   or "(mẫu)" in row["name"].casefold()
+                                   or "mẫu" in str(row["supplier"] or "").casefold()))
+                   or (not demo_mode and not row["code"].upper().startswith("DEMO-")
+                       and "(mẫu)" not in row["name"].casefold()
+                       and row["supplier"] != "Danh mục mẫu"
+                       and row["approved_sell_price"] == row["sell_price"]))]
+    if not priced:
+        return (AIResult(
+            f"Danh mục có sản phẩm phù hợp nhưng chưa có giá bán "
+            f"{'lốp' if wants_tire else 'phụ tùng phanh' if wants_brake else 'phụ tùng'} hiện hành được duyệt "
+            "(hoặc chỉ có dữ liệu mẫu). Vui lòng nhờ cố vấn dịch vụ kiểm tra bảng giá trước khi báo khách.",
+            "no_data", "local", ai_service.model, True,
+            ["Giá bán lốp" if wants_tire else
+             "Giá bán phụ tùng phanh" if wants_brake else "Giá bán phụ tùng"]), [])
+
+    limit = 8
+    lines = []
+    for row in priced[:limit]:
+        lines.append(f"- {row['name']} ({row['code']}): "
+                     f"{int(row['sell_price']):,} ₫/{row['unit']}.".replace(",", "."))
+    suffix = (f"\nĐang hiển thị {len(lines)}/{len(priced)} lựa chọn. Vui lòng cho biết kích thước "
+              "hoặc thương hiệu để thu hẹp kết quả." if len(priced) > limit else "")
+    vehicle_note = (" Chưa thể xác nhận lốp phù hợp với xe đã chọn chỉ từ hãng/dòng xe; "
+                    "vui lòng cung cấp kích thước trên hông lốp và đối chiếu thực tế."
+                    if any(term in text for term in ("xe toi", "xe cua toi", "xe minh", "vios")) else "")
+    total_note = (" Chưa thể tính tổng tiền thay lốp: cần xác nhận mã lốp, số lượng, "
+                  "giá công và các khoản áp dụng trên báo giá."
+                  if "thay lop" in text or "thay vo xe" in text else "")
+    content = (("Theo giá DEMO trong danh mục minh họa:\n" if demo_mode else
+                "Theo giá bán đã được duyệt cho từng mặt hàng trong danh mục garage:\n") +
+               "\n".join(lines) + suffix + vehicle_note + total_note +
+                ("\nGiá lốp chưa gồm công thay và các chi phí khác; " if wants_tire else
+                 "\nGiá phụ tùng phanh chưa gồm công thay và các chi phí khác; " if wants_brake else
+                 "\nGiá phụ tùng chưa gồm công thay và các chi phí khác; ") +
+                ("Đây là giá tham khảo DEMO trước khi tới garage; chưa được garage phê duyệt, "
+                 "không phải tra cứu hóa đơn và không dùng để lập hóa đơn."
+                 if demo_mode else "đây chưa phải báo giá chính thức."))
+    # Snapshot này vừa là nguồn hiển thị vừa là dữ liệu đã lọc để Ollama diễn đạt.
+    # Không đưa stock/cost_price/supplier hoặc dữ liệu chưa được duyệt vào snapshot.
+    sources = [{"type": "part", "id": row["id"],
+                 "label": f"Danh mục {'DEMO ' if demo_mode else ''}phụ tùng: {row['name']} ({row['code']})",
+                 "name": row["name"], "code": row["code"],
+                 "unit": row["unit"], "price": int(row["sell_price"]),
+                 "price_status": "DEMO" if demo_mode else "approved",
+                "size": next((part for part in re.findall(
+                    r"\d{3}\s*/?\s*\d{2}\s*[Rr]\s*\d{2}", str(row["name"]))), None)}
+                for row in priced[:limit]]
+    return AIResult(content, "fallback", "local", ai_service.model, False), sources
 
 
 def answer_inventory_question(db, question: str, user: dict, vehicle: dict | None = None):
