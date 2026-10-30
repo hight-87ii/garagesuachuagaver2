@@ -22,6 +22,9 @@ class PartIn(RecordModel):
     usage_requirements: str = Field(default="", max_length=500)
     price_note: str = Field(default="", max_length=500)
     supplier_note: str = Field(default="", max_length=500)
+    technical_description: str = Field(default="", max_length=2000)
+    technical_specs: str = Field(default="", max_length=2000)
+    usage_instructions: str = Field(default="", max_length=2000)
 
 
 class PartStockIn(RecordModel):
@@ -71,6 +74,9 @@ class PartUpdate(RecordModel):
     usage_requirements: str | None = Field(default=None, max_length=500)
     price_note: str | None = Field(default=None, max_length=500)
     supplier_note: str | None = Field(default=None, max_length=500)
+    technical_description: str | None = Field(default=None, max_length=2000)
+    technical_specs: str | None = Field(default=None, max_length=2000)
+    usage_instructions: str | None = Field(default=None, max_length=2000)
     active: bool | None = None
 
 
@@ -90,4 +96,7 @@ class PartOut(RecordModel):
     usage_requirements: str | None = None
     price_note: str | None = None
     supplier_note: str | None = None
+    technical_description: str | None = None
+    technical_specs: str | None = None
+    usage_instructions: str | None = None
     active: int | None = None

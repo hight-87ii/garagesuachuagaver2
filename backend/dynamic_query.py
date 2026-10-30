@@ -214,6 +214,9 @@ def compile_query_plan(db: sqlite3.Connection, question: str, user: dict) -> Que
     entity = _entity(text)
     if entity is None or not is_dynamic_query(question):
         return None
+    if any(term in text for term in ("khach hang khac", "nguoi khac", "khach khac", "ai khac", "cua nguoi khac")):
+        if not _has(user, "invoice.view_all"):
+            return QueryPlan(entity, (QueryCondition("__denied__", "eq", True),))
     if not _base_allowed(entity, user):
         return QueryPlan(entity, (QueryCondition("__denied__", "eq", True),))
     date_from, date_to, date_label = _date_range(text)
@@ -584,11 +587,18 @@ def _answer_service_usage(db, plan, user):
 
 
 def answer_dynamic_query(db: sqlite3.Connection, question: str, user: dict):
+    text = _normalize(question)
     plan = compile_query_plan(db, question, user)
     if plan is None:
         return None
     if any(condition.field == "__denied__" for condition in plan.filters):
-        return AIResult(DENIED, "fallback", "local", ai_service.model), []
+        denied_msg = (
+            "Bạn không có quyền truy cập thông tin hóa đơn của khách hàng khác. "
+            "Vì lý do bảo mật và quyền riêng tư, tài khoản của bạn chỉ được phép tra cứu các bản ghi thuộc sở hữu của mình."
+            if any(term in text for term in ("khach hang khac", "nguoi khac", "khach khac", "ai khac", "cua nguoi khac"))
+            else DENIED
+        )
+        return AIResult(denied_msg, "fallback", "local", ai_service.model), []
     if any(condition.field == "__missing_part__" for condition in plan.filters):
         return AIResult("Không nhận diện được phụ tùng trong danh mục. Vui lòng nêu đúng tên hoặc mã phụ tùng.",
                         "clarification", "local", ai_service.model, True, ["Tên hoặc mã phụ tùng"]), []

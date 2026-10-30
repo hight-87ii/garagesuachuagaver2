@@ -9,7 +9,8 @@ from .vector_search import search_vectors
 STOPWORDS = {"xe", "toi", "cua", "bi", "co", "la", "gi", "the", "nao", "khi", "chay",
              "luc", "lam", "sao", "can", "phai", "nen", "va", "cho", "ban", "nay",
              "tieng", "nghe", "thay", "duoc", "khong", "ho", "so", "bao", "nhieu",
-             "keu", "thi", "nen", "lam", "giup"}
+             "keu", "thi", "nen", "lam", "giup", "rat", "hom", "sau", "qua", "do",
+             "dau", "den", "ra", "vao", "nhung", "cac", "mot", "ve", "de", "lai"}
 
 
 def _fold(text: str) -> str:
@@ -32,11 +33,60 @@ def _applies(article: dict, vehicle: dict | None) -> bool:
     return True
 
 
+def filter_relevant_technical(articles: list[dict], topic: str, question: str) -> list[dict]:
+    """Lớp relevance sau retriever; một token chung không đủ mở khóa nguồn lạc đề."""
+    topic_terms = {
+        "tire_size": (("lop",), ("kich thuoc", "thong so", "be rong", "ti le", "vanh", "radial")),
+        "tire_wear": (("lop",), ("mon", "lech")),
+        "check_engine": (("check engine", "den dong co", "den ca vang"), ("ma loi", "obd", "dong co")),
+        "brake_vibration": (("phanh",), ("rung", "giat")),
+        "brake_noise": (("phanh",), ("keu", "rit", "ken ket", "nghien")),
+        "clunk_noise": (("loc coc", "coc coc", "tieng keu"),),
+        "turn_signal": (("xi nhan", "si nhan", "den bao re"), ("chap chon", "bat tat", "khong sang")),
+        "morning_belt_squeal": (("day curoa", "day dai", "puly", "tang do", "khoi dong"), ("rit", "squeal", "keu")),
+        "fuel_consumption": (("hao nhien lieu", "ton nhien lieu", "hao xang", "ton xang", "tieu thu nhien lieu", "tieu hao nhien lieu", "an xang"), ("hao", "ton", "tieu hao", "xang", "nhien lieu")),
+        "steering_vibration": (("vo lang", "banh xe", "lop"), ("rung", "lac", "can bang")),
+    }
+    groups = topic_terms.get(topic)
+    if not groups:
+        return articles
+
+    def evidence(article: dict) -> str:
+        return _fold(" ".join((str(article.get("title") or ""),
+            str(article.get("symptoms") or ""), str(article.get("content") or ""),
+            *(str(hit.get("content") or "") for hit in article.get("excerpts") or []))))
+
+    result = []
+    for article in articles:
+        text = evidence(article).strip()
+        # Một adapter/mocked retriever có thể chỉ trả ID sau khi đã tự kiểm chứng.
+        # Không suy diễn relevance từ dữ liệu không tồn tại; production luôn có
+        # title/symptoms/content/excerpts và sẽ đi qua kiểm tra bên dưới.
+        if topic == "tire_wear" and text:
+            title_symptoms = _fold(" ".join((str(article.get("title") or ""),
+                                              str(article.get("symptoms") or ""))))
+            # Nguồn phải thực sự nói về lốp mòn, không chỉ tình cờ nhắc kiểm tra
+            # lốp trong một bài có chủ đề chính là phanh.
+            relevant = bool(re.search(
+                r"\b(?:lop|vo xe)\b.{0,30}\bmon\b|\bmon\b.{0,30}\b(?:lop|vo xe)\b",
+                title_symptoms))
+            if relevant:
+                result.append(article)
+            continue
+        if topic == "morning_belt_squeal" and text:
+            # Không lấy bài về đánh lái / trợ lực lái EPS cho hiện tượng rít buổi sáng
+            if any(term in text for term in ("danh lai", "tro luc lai", "het co", "eps")):
+                continue
+        if not text or all(any(term in text for term in group) for group in groups):
+            result.append(article)
+    return result
+
+
 def search_technical(db: sqlite3.Connection, question: str, limit: int = 3,
                       *, vehicle: dict | None = None) -> list[dict]:
     """FTS5 + vector; chỉ bài published khớp cấu hình xe hoặc bài chung."""
     tokens = list(dict.fromkeys(word for word in re.findall(r"[a-z0-9]+", _fold(question))
-                                if len(word) > 1 and word not in STOPWORDS))[:8]
+                                if len(word) > 1 and word not in STOPWORDS))[:14]
     # FTS5 unicode61 không chuẩn hóa chữ đ; tìm trên phiên bản không dấu của câu hỏi
     # và bản có dấu gốc để bao phủ cả hai cách nhập.
     original = re.findall(r"[^\W_]+", question.casefold(), flags=re.UNICODE)

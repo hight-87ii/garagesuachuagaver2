@@ -33,6 +33,7 @@ class AIResultOut(RecordModel):
     history_summary: dict | None = None
     analytics: dict | None = None
     data_status: Literal["sourced", "partial", "no_data", "error"] | None = None
+    maintenance_recommendations: list[dict] = Field(default_factory=list)
 
 
 class VehicleHistorySummaryIn(RecordModel):

@@ -154,7 +154,16 @@ def send_message(conversation_id: int, item: ConversationMessageIn,
                 "SELECT * FROM ai_messages WHERE conversation_id=? AND id<? AND status='completed' ORDER BY id",
                 (conversation_id, user_row["id"]),
             ).fetchall()]
-        state = summarize([*previous, {"role": "user", "content": item.question, "status": "completed"}])
+        # State chỉ phản ánh các lượt đã hoàn tất trước đó. Câu hiện tại được
+        # pipeline xử lý đúng một lần; đưa nó vào đây sẽ khiến triệu chứng mới
+        # bị hiểu nhầm là follow-up và có thể bỏ qua truy xuất RAG.
+        previous_state = summarize(previous)
+        state = summarize([*previous, {"role": "user", "content": item.question,
+                                       "status": "completed"}])
+        # Vẫn nhận facts nghiệp vụ khách vừa trả lời (đời xe/mã máy/VIN) cho
+        # câu hỏi làm rõ hiện tại, nhưng technical_context chỉ lấy từ các lượt
+        # trước để triệu chứng hiện tại không bị xử lý hai lần.
+        state["technical_context"] = previous_state.get("technical_context")
         output = answer_chat(item.question, user, vehicle_id=conversation["vehicle_id"],
                              history=context_window(previous), state=state, trusted_history=True)
         resolved, result = output.answer, output.result

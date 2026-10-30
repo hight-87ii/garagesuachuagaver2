@@ -33,6 +33,11 @@ def eligible_sources(db):
             "customer_symptoms", "inspection_findings", "confirmed_cause", "work_done", "outcome"
         ) if row[key] is not None and str(row[key]).strip())
         yield "repair_case", row["id"], text
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='part_knowledge_documents'").fetchone():
+        for row in db.execute("""SELECT d.part_id,d.content FROM part_knowledge_documents d
+            JOIN parts p ON p.id=d.part_id WHERE p.active=1 ORDER BY d.part_id"""):
+            if str(row["content"] or "").strip():
+                yield "part_catalog", row["part_id"], row["content"]
 
 
 def embed_local(text: str, model: str, base_url: str = "http://127.0.0.1:11434",

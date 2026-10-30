@@ -44,6 +44,10 @@ def init_db() -> None:
         seed_demo_data(db)
         from .technical_starter_data import seed_reference_articles
         seed_reference_articles(db)
+        from .oil_interval_data import seed_oil_intervals
+        seed_oil_intervals(db)
+        from .popular_vehicle_fitments import seed_popular_vehicle_fitments
+        seed_popular_vehicle_fitments(db)
     finally:
         db.close()
 
@@ -113,6 +117,20 @@ EXTRA_PARTS = [
     ("SP-SEL-2022", "Bộ bugi Kia Seltos", "Động cơ", "Kia Seltos 2020-2023", "bộ", 580000, 780000, 7, 3),
     ("AC-CRV-2019", "Lọc gió điều hòa Honda CR-V", "Điều hòa", "Honda CR-V 2017-2020", "cái", 200000, 285000, 5, 3),
     ("AF-XPA-2023", "Lọc gió động cơ Mitsubishi Xpander", "Lọc - dầu", "Mitsubishi Xpander 2022-2024", "cái", 190000, 275000, 10, 4),
+]
+
+# Danh mục bóng đèn do garage cung cấp. Thông số chưa được cung cấp được ghi rõ
+# là cần đối chiếu trên nhãn sản phẩm, không tự suy đoán công suất hay lắp vừa.
+# code, name, category, compatible, unit, cost, sell, stock, min_stock, supplier,
+# compatibility_accuracy, usage_requirements, price_note, supplier_note,
+# technical_description, technical_specs, usage_instructions
+LIGHTING_PARTS = [
+    ("BD001", "Bóng đèn pha H4 Halogen", "Đèn pha", "Xe 12V có cụm đèn dùng chân H4", "cái", 60000, 90000, 30, 5, "Chưa chỉ định", "Tương thích có điều kiện theo chuẩn chân H4; chưa có dữ liệu hãng, dòng xe hoặc đời xe.", "Đối chiếu chân bóng, điện áp, công suất ghi trên bóng cũ và hướng dẫn của xe; ngắt nguồn trước khi thay.", "Giá nhập 60.000đ và giá bán 90.000đ do garage cung cấp; chưa kèm thời điểm hiệu lực.", "Chưa có tên, mã nhà cung cấp hoặc thông tin bảo hành.", "Bóng halogen H4 dùng cho cụm đèn pha phù hợp, thường tích hợp chức năng chiếu gần và chiếu xa trong cùng bóng.", "Chuẩn chân H4; công nghệ Halogen; điện áp và công suất phải kiểm tra trên nhãn sản phẩm thực tế.", "Không chạm tay trực tiếp vào phần thủy tinh; lắp đúng ngàm, đậy kín nắp chống bụi và kiểm tra luồng sáng sau khi thay."),
+    ("BD002", "Bóng đèn pha H7 Halogen", "Đèn pha", "Xe 12V có cụm đèn dùng chân H7", "cái", 70000, 110000, 25, 5, "Chưa chỉ định", "Tương thích có điều kiện theo chuẩn chân H7; chưa có dữ liệu hãng, dòng xe hoặc đời xe.", "Đối chiếu chân bóng, điện áp, công suất ghi trên bóng cũ và hướng dẫn của xe; ngắt nguồn trước khi thay.", "Giá nhập 70.000đ và giá bán 110.000đ do garage cung cấp; chưa kèm thời điểm hiệu lực.", "Chưa có tên, mã nhà cung cấp hoặc thông tin bảo hành.", "Bóng halogen H7 dùng cho vị trí chiếu sáng riêng biệt trên cụm đèn pha phù hợp.", "Chuẩn chân H7; công nghệ Halogen; điện áp và công suất phải kiểm tra trên nhãn sản phẩm thực tế.", "Không chạm tay trực tiếp vào phần thủy tinh; lắp đúng ngàm, đậy kín nắp chống bụi và kiểm tra luồng sáng sau khi thay."),
+    ("BD003", "Bóng đèn LED H4", "Đèn pha LED", "Xe 12V có cụm đèn dùng chân H4 và đủ không gian cho bộ tản nhiệt", "cái", 250000, 380000, 12, 4, "Chưa chỉ định", "Chỉ xác nhận chuẩn chân H4; chưa có dữ liệu kích thước, công suất, màu sáng, hãng, dòng xe hoặc đời xe.", "Kiểm tra điện áp, kích thước tản nhiệt, chụp chống bụi, hướng chip LED, khả năng báo lỗi và quy định chiếu sáng trước khi lắp.", "Giá nhập 250.000đ và giá bán 380.000đ do garage cung cấp; chưa kèm thời điểm hiệu lực.", "Chưa có tên, mã nhà cung cấp, thương hiệu hoặc thông tin bảo hành.", "Bóng LED thay thế theo chuẩn chân H4 cho cụm đèn tương thích; cần đánh giá quang học và khả năng tản nhiệt trên xe thực tế.", "Chuẩn chân H4; công nghệ LED; công suất, nhiệt màu, quang thông và chuẩn chống nước chưa được cung cấp.", "Lắp đúng hướng chip LED theo thiết kế cụm đèn, cố định bộ tản nhiệt/driver, kiểm tra chóa cắt sáng và không sử dụng nếu gây chói hoặc báo lỗi."),
+    ("BD004", "Bóng đèn P21W", "Đèn phanh/chiếu sáng", "Xe 12V có đui và chân bóng phù hợp chuẩn P21W", "cái", 15000, 25000, 50, 10, "Chưa chỉ định", "Tương thích có điều kiện theo chuẩn P21W; phải đối chiếu kiểu chân đế, màu bóng và vị trí sử dụng.", "Đối chiếu bóng cũ và sơ đồ đèn của xe; không thay bằng bóng khác công suất hoặc sai màu quy định.", "Giá nhập 15.000đ và giá bán 25.000đ do garage cung cấp; chưa kèm thời điểm hiệu lực.", "Chưa có tên, mã nhà cung cấp hoặc thông tin bảo hành.", "Bóng sợi đốt P21W dùng cho vị trí đèn phanh hoặc chiếu sáng tín hiệu khi cụm đèn quy định đúng chuẩn.", "Chuẩn P21W; công suất danh định 21W theo ký hiệu; điện áp, kiểu chân đế và màu bóng phải kiểm tra trên sản phẩm thực tế.", "Ngắt nguồn, tháo bóng nguội, lắp đúng chốt định vị và kiểm tra đầy đủ chức năng đèn sau khi thay."),
+    ("BD005", "Bóng đèn W5W", "Đèn vị trí/nội thất", "Xe 12V có đui cắm phù hợp chuẩn W5W", "cái", 8000, 15000, 60, 10, "Chưa chỉ định", "Tương thích có điều kiện theo chuẩn W5W; phải đối chiếu kích thước, màu bóng và vị trí sử dụng.", "Đối chiếu bóng cũ và sơ đồ đèn của xe; dùng đúng màu sáng theo vị trí và quy định áp dụng.", "Giá nhập 8.000đ và giá bán 15.000đ do garage cung cấp; chưa kèm thời điểm hiệu lực.", "Chưa có tên, mã nhà cung cấp hoặc thông tin bảo hành.", "Bóng chân cắm W5W dùng cho đèn vị trí, đèn biển số hoặc một số vị trí nội thất khi cụm đèn quy định đúng chuẩn.", "Chuẩn W5W; công suất danh định 5W theo ký hiệu; điện áp và kích thước phải kiểm tra trên sản phẩm thực tế.", "Ngắt nguồn, kéo bóng thẳng khỏi đui, lắp chắc chắn và kiểm tra chức năng trước khi đóng lại cụm đèn."),
+    ("BD006", "Bóng đèn H11 Halogen", "Đèn sương mù/chiếu sáng", "Xe 12V có cụm đèn dùng chân H11", "cái", 80000, 120000, 20, 5, "Chưa chỉ định", "Tương thích có điều kiện theo chuẩn chân H11; chưa có dữ liệu hãng, dòng xe hoặc đời xe.", "Đối chiếu chân bóng, điện áp, công suất ghi trên bóng cũ và hướng dẫn của xe; ngắt nguồn trước khi thay.", "Giá nhập 80.000đ và giá bán 120.000đ do garage cung cấp; chưa kèm thời điểm hiệu lực.", "Chưa có tên, mã nhà cung cấp hoặc thông tin bảo hành.", "Bóng halogen H11 dùng cho đèn sương mù hoặc vị trí chiếu sáng có cụm đèn tương thích.", "Chuẩn chân H11; công nghệ Halogen; điện áp và công suất phải kiểm tra trên nhãn sản phẩm thực tế.", "Không chạm tay trực tiếp vào phần thủy tinh; xoay khóa đúng khớp, kiểm tra gioăng kín và thử đèn sau khi thay."),
 ]
 
 
@@ -242,6 +260,26 @@ def seed_demo_data(db) -> None:
                    stock,min_stock,supplier,active) VALUES(?,?,?,?,?,?,?,?,?,'Danh mục mẫu',1)""",
             EXTRA_PARTS,
         )
+        db.executemany(
+            """INSERT OR IGNORE INTO parts(code,name,category,compatible,unit,cost_price,sell_price,
+                   stock,min_stock,supplier,compatibility_accuracy,usage_requirements,price_note,
+                   supplier_note,technical_description,technical_specs,usage_instructions,active)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+            LIGHTING_PARTS,
+        )
+        # Giá bán bóng đèn do garage cung cấp trong đợt cập nhật danh mục. Chỉ
+        # duyệt lần đầu khi giá hiện tại vẫn đúng snapshot; giá bị sửa sau đó
+        # sẽ bị trigger thu hồi duyệt và không được tự duyệt lại khi khởi động.
+        admin_id = db.execute("SELECT id FROM users WHERE role='Admin' ORDER BY id LIMIT 1").fetchone()[0]
+        for lighting_part in LIGHTING_PARTS:
+            code, sell_price = lighting_part[0], lighting_part[6]
+            db.execute(
+                """INSERT OR IGNORE INTO part_price_approvals(
+                       part_id,approved_sell_price,approved_by,source)
+                   SELECT id,sell_price,?,? FROM parts
+                   WHERE code=? AND sell_price=?""",
+                (admin_id, "Giá do garage cung cấp khi cập nhật danh mục bóng đèn", code, sell_price),
+            )
         seed_expanded_catalog(db)
 
         def vehicle(plate: str):

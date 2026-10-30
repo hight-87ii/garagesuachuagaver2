@@ -28,6 +28,7 @@ from ...timeutil import VN_TZ
 from ...invoice_query import answer_invoice_question
 from ...inventory_query import (answer_inventory_question, answer_part_price_question,
                                 is_inventory_question)
+from ...maintenance_interval import is_maintenance_interval_question
 from ...permissions import has_permission
 from ...vehicle_chat import customer_vehicles_reply
 from ...schemas.ai import (AIRequest, AIResultOut, AssistantChatIn, InvoiceQueryIn,
@@ -35,7 +36,7 @@ from ...schemas.ai import (AIRequest, AIResultOut, AssistantChatIn, InvoiceQuery
 
 router = APIRouter(prefix="/ai", tags=["AI Services"])
 
-_INDICATOR = r"\b(?:xi\s*nhanh?|si\s*nhan|den bao re)\b"
+_INDICATOR = r"\b(?:xi\s*nhan(?:h)?|si\s*nhan|den bao re)\b"
 
 
 def _garage_hours_reply(question: str) -> tuple[AIResult | None, list[dict]]:
@@ -95,7 +96,7 @@ def _catalog_service_reply(db, question: str, history: list[dict] | None = None)
     text = ai_service._normalize_vi(question)
     if any(term in text for term in ("ngap nuoc", "thuy kich", "chay xe", "phanh hong")):
         return None, []  # hướng dẫn an toàn có ưu tiên cao hơn bảng giá
-    if "thay dau" in text and any(term in text for term in ("khi nao", "lan toi", "tiep", "chu ky", "den han", "moc")):
+    if is_maintenance_interval_question(question):
         return None, []  # hỏi mốc bảo dưỡng là tác vụ khác
     names: list[str] = []
     if "thay dau hop so" in text:
@@ -129,6 +130,42 @@ def _catalog_service_reply(db, question: str, history: list[dict] | None = None)
                 previous = ai_service._normalize_vi(str(turn.get("text") or ""))
                 if previous != text and any(term in previous for term in ("thay dau", "ve sinh xe", "rua xe")):
                     return _catalog_service_reply(db, str(turn["text"]))
+
+    # Xử lý yêu cầu hỏi về dịch vụ kiểm tra hệ thống điện hoặc hỏi sự tồn tại của dịch vụ
+    is_service_inquiry = any(term in text for term in (
+        "co dich vu nay khong", "garage co dich vu", "co dich vu", "co goi dich vu",
+        "co lam dich vu", "co nhan lam", "co goi kiem tra", "co nhan kiem tra",
+        "co kiem tra khong", "co nhan khong"
+    )) or (
+        ("co" in text or "muon" in text) and "dich vu" in text and any(term in text for term in ("khong", "chua"))
+    )
+
+    is_electrical_check = ("he thong dien" in text or "dien xe" in text or ("dien" in text and any(term in text for term in ("kiem tra", "chuan doan"))))
+
+    if not names and is_electrical_check and (is_service_inquiry or any(term in text for term in ("co khong", "gia", "chi phi", "bao nhieu"))):
+        related_ids = (535, 536, 538, 6)
+        by_id = {service["id"]: service for service in services}
+        rel_services = [by_id[sid] for sid in related_ids if sid in by_id]
+        lines = [
+            f"- {s['name']}: {int(s['price']):,} ₫ (thời lượng khoảng {s['duration_min']} phút). {s['description']}".replace(",", ".")
+            for s in rel_services
+        ]
+        content = (
+            "Danh mục dịch vụ hiện tại của ThreeH Workshop chưa có gói niêm yết riêng mang tên “Kiểm tra toàn bộ hệ thống điện”. "
+            "Bạn vui lòng liên hệ cố vấn dịch vụ để được kỹ thuật viên tiếp nhận, đo kiểm thực tế và báo giá chi tiết theo yêu cầu xe.\n\n"
+            "Hiện tại garage có các hạng mục dịch vụ kiểm tra, chẩn đoán điện và hệ thống liên quan đã được niêm yết bạn có thể tham khảo:\n"
+            + "\n".join(lines) + "\n\n"
+            "Ước tính trên là giá dịch vụ tham khảo theo danh mục đang hoạt động của garage, chưa bao gồm vật tư phụ tùng thay thế nếu phát sinh."
+        )
+        sources = [{"type": "service", "id": s["id"], "label": f"Danh mục dịch vụ: {s['name']}"} for s in rel_services]
+        return AIResult(content, "fallback", "local", ai_service.model), sources
+
+    if not names and is_service_inquiry:
+        return AIResult(
+            "Danh mục dịch vụ niêm yết hiện tại của garage chưa có gói dịch vụ tương ứng với yêu cầu này. "
+            "Vui lòng liên hệ trực tiếp cố vấn dịch vụ hoặc nhân viên xưởng để được kiểm tra khả năng tiếp nhận và báo giá theo tình trạng xe.",
+            "no_data", "local", ai_service.model, True, ["Danh mục dịch vụ"]), []
+
     if not names:
         return None, []
     by_name = {service["name"]: service for service in services}
@@ -168,7 +205,9 @@ def _is_technical_question(question: str) -> bool:
                        "rung", "giat", "lech lai", "nhao lai", "keo ve mot ben",
                         "khong lanh", "khong mat", "kho no", "khong no", "kho de",
                         "de khong", "de may cham", "tach tach", "check engine", "den ca vang",
-                        "den dong co", "qua nhiet", "nong may", "nhiet do dong co")
+                        "den dong co", "qua nhiet", "nong may", "nhiet do dong co",
+                        "hao nhien lieu", "ton nhien lieu", "hao xang", "ton xang", "an xang",
+                        "tieu thu nhien lieu", "tieu hao nhien lieu", "ton dau", "hao dau")
     if any(phrase in text for phrase in symptom_phrases):
         return True
     if re.search(r"\b(lop|phanh|dong co|may|vo lang)\b", text) and any(
@@ -180,7 +219,7 @@ def _is_technical_question(question: str) -> bool:
         return True
     # Câu hỏi rộng cần có ngữ cảnh xe VÀ chủ đề kỹ thuật; không bắt 'mua' đơn
     # lẻ vì nó cũng có thể là 'mua phụ tùng'.
-    vehicle = re.search(r"\b(xe|oto|o to|dong co|phanh|lop|gat mua|ac quy)\b", text)
+    vehicle = re.search(r"\b(xe|oto|o to|dong co|may|phanh|lop|gat mua|ac quy|hop so|dau hop so)\b", text)
     topic = any(phrase in text for phrase in (
         "troi mua", "mua lon", "mua bao", "mua ngap", "mua mua", "sau mua",
         "di mua", "am uot", "ngap nuoc", "thoi tiet", "nguyen nhan",
@@ -313,7 +352,8 @@ def _general_knowledge_question(question: str) -> bool:
     knowledge = any(phrase in text for phrase in (
         "la gi", "the nao", "hoat dong", "nguyen nhan", "do dau", "co the do",
         "can luu y", "luu y gi", "chu y gi", "dau hieu", "co nguy hiem",
-        "khi nao can", "nen lam gi", "cach kiem tra", "cach lai"))
+        "khi nao can", "khi nao nen", "khi nao", "co can thay", "dinh ky",
+        "bao lau thi", "can thay khong", "nen lam gi", "cach kiem tra", "cach lai"))
     return bool(automotive and knowledge)
 
 
@@ -334,7 +374,7 @@ def _technical_references(db, question: str, vehicle=None, *, semantic_technical
     # Mở rộng truy vấn tìm kiếm, không sửa câu hỏi gốc hoặc chỉ mục embedding.
     tire_question = bool(re.search(r"\b(lop|vo xe)\b", text))
     tire_wear = bool(tire_question and any(term in text for term in (
-        "an lech", "mon lech", "mon khong deu", "lop mon")))
+        "an lech", "mon lech", "mon khong deu", "lop mon", "mon khac nhau", "hai ben mon", "mon vai", "mon mep")))
     tire_noise = bool(tire_question and any(term in text for term in (
         "rit", "ken ket", "tieng nghien")))
     tire_slip = bool(tire_question and any(term in text for term in (
@@ -344,7 +384,7 @@ def _technical_references(db, question: str, vehicle=None, *, semantic_technical
                 bool(re.search(r"\b(chap chon|khong on dinh|luc|bat tat)\b", text)))
     lookup = ("xi nhan chap chon den bao re luc sang luc khong" if unstable else
               re.sub(_INDICATOR, "xi nhan", text) if indicator_query else
-              "lốp mòn không đều mòn lệch một bên" if tire_wear else
+              "lốp mòn mép mòn không đều mòn lệch" if tire_wear else
               "lốp rít tiếng rít tiếng nghiến" if tire_noise else
               "lốp mất độ bám trượt ở tốc độ cao" if tire_slip else question)
     cases = search_repair_cases(db, lookup, selected, limit=1)

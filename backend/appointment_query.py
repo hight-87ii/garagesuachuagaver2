@@ -60,7 +60,17 @@ def is_appointment_question(question: str) -> bool:
     return any(term in text for term in (
         "lich hen", "lich dat", "cuoc hen", "cho xac nhan", "chua xac nhan",
         "da xac nhan", "da tiep nhan", "da duoc tiep nhan", "tiep nhan xe", "xe da den garage",
-        "qua gio", "cho xu ly",
+        "qua gio", "cho xu ly", "dat lich", "muon dat lich", "hen lich", "dat hen", "dang ky lich",
+        "doi lich", "doi sang ngay", "doi ngay", "doi gio", "doi lich hen", "chuyen lich", "chuyen sang ngay", "ho tro doi",
+    ))
+
+
+def is_appointment_reschedule_question(question: str) -> bool:
+    text = _normalize(question)
+    return any(term in text for term in (
+        "doi sang ngay khac", "doi lich", "doi ngay", "doi gio", "doi lich hen",
+        "doi sang ngay", "doi ngay hen", "ho tro doi lich", "muon doi sang",
+        "chuyen sang ngay", "chuyen lich", "muon doi sang ngay khac", "doi sang ngay nao"
     ))
 
 
@@ -257,6 +267,91 @@ def answer_appointment_question(db: sqlite3.Connection, question: str, user: dic
     if filters.time_from and (filters.time_from > filters.time_to or int(filters.time_to[:2]) > 23):
         return AIResult("Khoảng giờ không hợp lệ; vui lòng nhập giờ bắt đầu và kết thúc trong cùng một ngày.",
                         "clarification", "local", ai_service.model, True, ["Khoảng giờ hợp lệ"]), []
+
+    if is_appointment_reschedule_question(question):
+        scope = customer_scope_id(db, user)
+        appointments = []
+        if scope is not None and scope != -1:
+            appointments = [dict(r) for r in db.execute(
+                """SELECT id, plate, service, reason, appointment_at, status
+                   FROM appointments
+                   WHERE (customer_id=? OR (customer_id IS NULL AND EXISTS(SELECT 1 FROM vehicles sv WHERE sv.id=appointments.vehicle_id AND sv.customer_id=?)))
+                     AND status IN ('Đang chờ', 'Đã xác nhận')
+                   ORDER BY appointment_at DESC LIMIT 3""", (scope, scope)
+            ).fetchall()]
+
+        if appointments:
+            lines = ["Garage hoàn toàn **hỗ trợ đổi lịch hẹn miễn phí** cho bạn.\n\nThông tin lịch hẹn hiện tại ghi nhận trên hệ thống:"]
+            sources = []
+            for appt in appointments:
+                dt_str = appt.get("appointment_at") or ""
+                time_display = dt_str
+                try:
+                    if dt_str.endswith("Z"):
+                        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).astimezone(VN_TZ)
+                        time_display = dt.strftime("%H:%M ngày %d/%m/%Y")
+                    elif dt_str:
+                        dt = datetime.fromisoformat(dt_str)
+                        time_display = dt.strftime("%H:%M ngày %d/%m/%Y")
+                except Exception:
+                    time_display = dt_str
+
+                lines.append(
+                    f"- **Mã lịch hẹn LH-{appt['id']:04d}** (Biển số xe: {appt['plate']})\n"
+                    f"  + Hạng mục: {appt['service']}\n"
+                    f"  + Thời gian đã đặt: {time_display}\n"
+                    f"  + Trạng thái: {appt['status']}"
+                )
+                sources.append({
+                    "type": "appointment",
+                    "id": appt["id"],
+                    "label": f"Lịch hẹn LH-{appt['id']:04d}: {appt['plate']} ({appt['service']})"
+                })
+
+            lines.append(
+                "\nBạn muốn chuyển lịch sang **ngày nào và khung giờ nào** (buổi sáng hay buổi chiều) "
+                "để garage kiểm tra cầu nâng còn trống và xác nhận lại lịch hẹn cho bạn?\n"
+                "*Bạn cũng có thể vào trực tiếp mục 'Lịch hẹn của tôi' trên ứng dụng để chủ động đổi sang khung giờ mới.*"
+            )
+            return AIResult("\n".join(lines), "success", "local", ai_service.model), sources
+
+        content = (
+            "Garage hoàn toàn **hỗ trợ đổi lịch hẹn miễn phí** cho khách hàng.\n\n"
+            "Tuy nhiên, hệ thống hiện chưa tìm thấy lịch hẹn nào đang chờ tiếp nhận thuộc tài khoản của bạn. "
+            "Bạn vui lòng cung cấp **mã lịch hẹn (LH-xxxx)** hoặc **biển số xe** đã đăng ký để cố vấn dịch vụ tra cứu và hỗ trợ đổi ngày giờ cho bạn."
+        )
+        return AIResult(content, "clarification", "local", ai_service.model, True, ["Mã lịch hẹn hoặc biển số xe"]), []
+    if any(term in text for term in ("dat lich", "muon dat lich", "hen lich", "dat hen", "muon hen", "dang ky lich")):
+        time_hint = ""
+        if "chieu thu sau tuan nay" in text:
+            time_hint = "chiều thứ Sáu tuần này"
+        elif "sang thu sau tuan nay" in text:
+            time_hint = "sáng thứ Sáu tuần này"
+        elif "thu sau tuan nay" in text:
+            time_hint = "thứ Sáu tuần này"
+        elif "chieu thu sau" in text:
+            time_hint = "chiều thứ Sáu"
+        elif "sang thu sau" in text:
+            time_hint = "sáng thứ Sáu"
+        elif "ngay mai" in text:
+            time_hint = "ngày mai"
+        elif "hom nay" in text:
+            time_hint = "hôm nay"
+        elif "cuoi tuan" in text:
+            time_hint = "cuối tuần"
+        elif "tuan nay" in text:
+            time_hint = "tuần này"
+        time_str = f" vào {time_hint}" if time_hint else ""
+        content = (
+            f"Garage đã ghi nhận yêu cầu đặt lịch kiểm tra xe{time_str}.\n\n"
+            "Để garage sắp xếp cầu nâng và kỹ thuật viên tiếp đón chu đáo, bạn vui lòng cho biết:\n"
+            "- Biển số xe cần kiểm tra (hoặc chọn xe trong hồ sơ của bạn).\n"
+            "- Khung giờ cụ thể bạn muốn mang xe đến (garage mở cửa từ 8:00 - 17:30).\n"
+            "- Biểu hiện xe hoặc các hạng mục cần kiểm tra cụ thể (ví dụ: kiểm tra tổng quát, phanh, máy lạnh, động cơ...).\n"
+            "- Số điện thoại liên hệ để nhân viên lễ tân gọi xác nhận lịch hẹn.\n\n"
+            "Ngoài ra, bạn có thể vào trực tiếp mục 'Đặt lịch hẹn' trên hệ thống để chọn khung giờ còn trống và đặt chỗ nhanh nhất."
+        )
+        return AIResult(content, "success", "local", ai_service.model), []
     if any(term in text for term in ("ca lam viec", "ca hien tai")):
         return AIResult("Hệ thống hiện chưa lưu cấu hình ca làm việc nên không thể lọc chính xác theo ca.",
                         "clarification", "local", ai_service.model, True, ["Cấu hình ca làm việc"]), []

@@ -1,5 +1,28 @@
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8014';
 
+export type MaintenanceRecommendation = {
+  category: string;
+  item_name: string;
+  action_type: 'replace' | 'inspect_wear' | 'inspect' | 'update_mileage' | 'check_odometer';
+  action_label: string;
+  last_km?: number | null;
+  last_date?: string | null;
+  current_km?: number | null;
+  used_km?: number | null;
+  interval_km?: number | null;
+  source_type?: string;
+  source_name?: string;
+  service_id: number;
+  service_name: string;
+  vehicle_id: number;
+  vehicle_plate?: string;
+  recommendation_text: string;
+  status: 'due' | 'warning' | 'inspect';
+  mileage_anomaly?: boolean;
+  missing_mileage?: boolean;
+  has_existing_appointment?: boolean;
+};
+
 export type AIResult = {
   result: string;
   is_draft: boolean;
@@ -12,6 +35,7 @@ export type AIResult = {
   history_summary?: Record<string, unknown>;
   analytics?: Record<string, unknown>;
   data_status?: 'sourced' | 'partial' | 'no_data' | 'error';
+  maintenance_recommendations?: MaintenanceRecommendation[];
 };
 
 export type AIConversation = {

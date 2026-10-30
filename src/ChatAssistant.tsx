@@ -18,6 +18,93 @@ function AssistantAppointmentItems({items,vehicleId,onAdd}:{items:NonNullable<AI
   </div>;
 }
 
+function SmartMaintenanceCard({
+  recommendations,
+  vehicleId,
+  onAdd,
+  onAskHistory,
+}: {
+  recommendations: NonNullable<AIResult['maintenance_recommendations']>;
+  vehicleId: string;
+  onAdd?: (selection: AppointmentSelection) => void;
+  onAskHistory?: () => void;
+}) {
+  if (!recommendations || !recommendations.length) return null;
+
+  return (
+    <div className="smart-maintenance-card" aria-label="Gợi ý bảo dưỡng thông minh">
+      <div className="smart-card-header">
+        <span className="smart-card-icon"><Sparkles size={15} /></span>
+        <div className="smart-card-title">
+          <strong>Gợi ý bảo dưỡng thông minh cho xe của bạn</strong>
+          <small>Phân tích từ số kilomet và lịch sử dịch vụ tại xưởng</small>
+        </div>
+      </div>
+      <div className="smart-card-items">
+        {recommendations.map((rec, idx) => {
+          const isWarning = rec.missing_mileage || rec.mileage_anomaly;
+          const targetVehicleId = rec.vehicle_id || Number(vehicleId) || 0;
+          return (
+            <div key={idx} className={`smart-item ${rec.status || 'due'}`}>
+              <div className="smart-item-content">
+                <div className="smart-item-top">
+                  <span className={`smart-item-badge ${rec.status || 'due'}`}>
+                    {rec.missing_mileage ? 'Cần cập nhật km' :
+                     rec.mileage_anomaly ? 'Cảnh báo km' :
+                     rec.action_type === 'inspect_wear' ? 'Kiểm tra độ mòn' :
+                     rec.status === 'due' ? 'Đến hạn bảo dưỡng' : 'Sắp đến hạn'}
+                  </span>
+                  {rec.used_km != null && (
+                    <span className="smart-item-km">
+                      Đã chạy thêm: <strong>{new Intl.NumberFormat('vi-VN').format(rec.used_km)} km</strong>
+                    </span>
+                  )}
+                  {rec.interval_km != null && (
+                    <span className="smart-item-interval">
+                      Chu kỳ: {new Intl.NumberFormat('vi-VN').format(rec.interval_km)} km
+                    </span>
+                  )}
+                </div>
+                <p className="smart-item-text">{rec.recommendation_text}</p>
+                {rec.source_name && (
+                  <small className="smart-item-source">Căn cứ: {rec.source_name}</small>
+                )}
+              </div>
+              {!isWarning && onAdd && (
+                <div className="smart-item-actions">
+                  <button
+                    type="button"
+                    className="smart-action-btn primary"
+                    onClick={() => onAdd({
+                      vehicle_id: targetVehicleId,
+                      kind: 'service',
+                      id: rec.service_id,
+                      name: rec.service_name,
+                    })}
+                  >
+                    <CalendarPlus size={14} />
+                    {rec.action_label || `Đặt lịch ${rec.service_name}`}
+                  </button>
+                  {onAskHistory && (
+                    <button
+                      type="button"
+                      className="smart-action-btn secondary"
+                      onClick={onAskHistory}
+                      title="Xem lịch sử sửa chữa của xe"
+                    >
+                      Xem lịch sử bảo dưỡng
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function ChatAssistant({user,compact=false,initialVehicleId,onAddToAppointment,onOpenAppointment}:{user:User;compact?:boolean;initialVehicleId?:number;onAddToAppointment?:(selection:AppointmentSelection)=>void;onOpenAppointment?:(id:number)=>void}){
   const customer=user.role==='Khách hàng';
   const [vehicles,setVehicles]=useState<Vehicle[]>([]);
@@ -31,6 +118,15 @@ export default function ChatAssistant({user,compact=false,initialVehicleId,onAdd
   const [loadingThread,setLoadingThread]=useState(false);
   const [vehicleLoading,setVehicleLoading]=useState(customer);
   const [sending,setSending]=useState(false);
+  const [processingStep,setProcessingStep]=useState('Đang phân tích câu hỏi (Qwen AI)...');
+
+  useEffect(()=>{
+    if(!sending)return;
+    setProcessingStep('Đang phân tích câu hỏi (Qwen AI)...');
+    const t1=setTimeout(()=>setProcessingStep('Đang tra cứu dữ liệu garage & Kho tri thức...'), 900);
+    const t2=setTimeout(()=>setProcessingStep('Đang tổng hợp câu trả lời đã xác minh...'), 2200);
+    return()=>{clearTimeout(t1);clearTimeout(t2)};
+  },[sending]);
   const [deletingId,setDeletingId]=useState<number|null>(null);
   const [confirmId,setConfirmId]=useState<number|null>(null);
   const [error,setError]=useState('');
@@ -154,10 +250,29 @@ export default function ChatAssistant({user,compact=false,initialVehicleId,onAdd
     </div>
     <div className="assistant-thread" ref={threadRef} role="log" aria-live="polite">
       {loadingThread?<div className="assistant-bubble assistant"><Bot size={17}/><p>Đang mở cuộc trò chuyện...</p></div>:!turns.length?<div className="assistant-intro"><span className="assistant-spark"><Sparkles size={24}/></span><h3>Hỏi trợ lý ThreeH</h3><p>Hỏi cụ thể điều bạn cần biết. Trợ lý sẽ giữ ngữ cảnh trong cuộc trò chuyện này.</p><div className="assistant-suggestions">
-         {[...(['Admin','Quản lý','Lễ tân','Khách hàng'].includes(user.role)?['Có bao nhiêu lịch hẹn chưa xác nhận?', 'Ngày mai có những lịch hẹn nào chưa xác nhận?']:[]),...(['Admin','Quản lý','Thu ngân','Khách hàng'].includes(user.role)?['Liệt kê hóa đơn trên 10 triệu đồng.', 'Tìm hóa đơn còn nợ trên 5 triệu đồng.']:[]),'Ai sở hữu xe Hyundai Accent?', 'Khách hàng nào có 2 xe?', 'Giá vệ sinh xe và mất bao lâu?', 'Xe tôi bị ngập nước, cần làm gì trước?', 'Xe này đã sửa những gì?'].map(text=><button type="button" key={text} onClick={()=>send(text)} disabled={sending||loadingList}><PackageSearch size={14}/>{text}</button>)}
+         {[
+          'Giá lốp Michelin 205/55R16 bao nhiêu?',
+          'Có loại nào rẻ hơn không?',
+          'So sánh hai loại đó giúp tôi.',
+          'Khi nào cần thay dầu động cơ?',
+          'Đạp phanh nghe tiếng ken két là do đâu?',
+          'Xe để qua đêm sáng hôm sau đề khó nổ có thể do đâu?',
+          ...(['Admin','Quản lý','Lễ tân','Khách hàng'].includes(user.role)?['Có bao nhiêu lịch hẹn chưa xác nhận?', 'Ngày mai có những lịch hẹn nào chưa xác nhận?']:[]),
+          ...(['Admin','Quản lý','Thu ngân'].includes(user.role)?['Liệt kê hóa đơn trên 10 triệu đồng.']:[]),
+          'Giá vệ sinh xe và mất bao lâu?',
+          'Xe tôi bị ngập nước, cần làm gì trước?'
+         ].map(text=><button type="button" key={text} onClick={()=>send(text)} disabled={sending||loadingList}><PackageSearch size={14}/>{text}</button>)}
       </div></div>:turns.map(turn=><div key={turn.id} className={`assistant-bubble ${turn.role}`}>
         {turn.role==='assistant'&&<Bot size={17} aria-hidden="true"/>}
          <div><p>{turn.content}</p>
+            {turn.role==='assistant'&&turn.result?.maintenance_recommendations&&turn.result.maintenance_recommendations.length>0&&(
+              <SmartMaintenanceCard
+                recommendations={turn.result.maintenance_recommendations}
+                vehicleId={vehicleId}
+                onAdd={customer ? onAddToAppointment : undefined}
+                onAskHistory={()=>send('Xe tôi đã từng thay những phụ tùng nào?')}
+              />
+            )}
            {turn.role==='assistant'&&turn.result?.sources?.some(source=>source.type==='appointment')&&onOpenAppointment&&<div className="assistant-appointment-links" aria-label="Mở lịch hẹn">
              {turn.result.sources.filter(source=>source.type==='appointment'&&source.id!=null).map(source=><button type="button" key={source.id} onClick={()=>onOpenAppointment(source.id!)} aria-label={`Mở lịch hẹn ${source.label}`}>{source.label} <ArrowUpRight size={14} aria-hidden="true"/></button>)}
            </div>}
@@ -166,7 +281,7 @@ export default function ChatAssistant({user,compact=false,initialVehicleId,onAdd
            {turn.result&&<>{Boolean(turn.result.sources?.some(source=>source.type!=='appointment'))&&<details className="assistant-sources"><summary>Xem nguồn đối chiếu</summary><AISourceReferences sources={turn.result.sources?.filter(source=>source.type!=='appointment')}/>{customer&&onAddToAppointment&&<AssistantAppointmentItems items={turn.result.suggested_items||[]} vehicleId={vehicleId} onAdd={onAddToAppointment}/>}</details>}
             <small><Database size={12}/>{turn.result.status==='safety'?'Hướng dẫn an toàn chung':turn.result.status==='clarification'?'Cần bạn bổ sung thông tin':turn.result.no_data?'Chưa đủ dữ liệu':turn.result.status==='success'?'AI đã trả lời':'Dữ liệu hệ thống'}</small></>}
         </div></div>)}
-      {sending&&<div className="assistant-bubble assistant"><Bot size={17}/><p>Đang đối chiếu dữ liệu...</p></div>}
+      {sending&&<div className="assistant-bubble assistant"><Bot size={17}/><div><p>{processingStep}</p><small style={{color:'var(--text-muted, #64748b)',fontSize:'0.75rem'}}>Bộ điều phối Qwen AI · Garage Database · RAG</small></div></div>}
     </div>
     <div className="assistant-compose">
       {error&&<p className="assistant-error" role="alert"><CircleAlert size={15}/>{error}</p>}

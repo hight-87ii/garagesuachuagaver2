@@ -12,7 +12,7 @@ from .vector_index import embed_local
 def search_vectors(db, question: str, source_type: str, *, model: str | None = None,
                    embed=embed_local, limit: int = 30) -> list[tuple[int, float]]:
     """Trả ID nguồn theo cosine; chỉ quét vector của nguồn vẫn được xuất bản."""
-    if source_type not in ("technical_chunk", "repair_case") or not question.strip():
+    if source_type not in ("technical_chunk", "repair_case", "part_catalog") or not question.strip():
         return []
     model = model or os.getenv("LOCAL_EMBED_MODEL", "bge-m3")
     if source_type == "technical_chunk":
@@ -21,10 +21,16 @@ def search_vectors(db, question: str, source_type: str, *, model: str | None = N
             JOIN technical_articles a ON a.id=c.article_id
             WHERE v.model=? AND v.source_type='technical_chunk'
               AND a.status='published' AND a.deleted_at IS NULL""", (model,)).fetchall()
-    else:
+    elif source_type == "repair_case":
         rows = db.execute("""SELECT v.source_id,v.dimensions,v.embedding
             FROM knowledge_vectors v JOIN repair_knowledge_cases c ON c.id=v.source_id
             WHERE v.model=? AND v.source_type='repair_case' AND c.status='published'""",
+                           (model,)).fetchall()
+    else:
+        rows = db.execute("""SELECT v.source_id,v.dimensions,v.embedding
+            FROM knowledge_vectors v JOIN part_knowledge_documents d ON d.part_id=v.source_id
+            JOIN parts p ON p.id=d.part_id
+            WHERE v.model=? AND v.source_type='part_catalog' AND p.active=1""",
                           (model,)).fetchall()
     if not rows:
         return []

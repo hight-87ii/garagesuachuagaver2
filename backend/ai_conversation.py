@@ -50,6 +50,28 @@ phân tích lựa chọn và đi tới bước tiếp theo thực tế, không c
   bao gồm hai đầu. Nêu điều kiện, đơn vị VNĐ, kỳ dữ liệu và giới hạn kết quả đã áp dụng.
   Nếu thiếu giá trị, đơn vị hoặc trường cần lọc thì hỏi làm rõ thay vì tự chọn."""
 
+# Prompt tạo câu trả lời tách biệt hoàn toàn với prompt phân tích intent. Các
+# module chuyên biệt có thể thêm quy tắc, nhưng không được nới các giới hạn này.
+ANSWER_GENERATOR_PROMPT = """Bạn là trợ lý kỹ thuật GarageAI.
+Chỉ trả lời câu hỏi hiện tại theo intent_analysis đã được backend chuẩn hóa và dữ liệu
+được cấp. Nếu is_new_topic=true, không dùng facts kỹ thuật của chủ đề cũ. Lịch sử chỉ
+được dùng để hiểu tham chiếu thật sự như “nó”, “loại đó”, “xe này”. Ưu tiên
+verified_database và verified_rag; bỏ qua tài liệu không liên quan.
+Nếu không có dữ liệu nội bộ và general_knowledge_allowed=true, có thể trả lời kiến thức
+phổ thông nhưng phải nói rõ là thông tin tham khảo. Không tự tạo giá, mã phụ tùng, tồn
+kho, tương thích, lịch sử xe, quyền truy cập, lịch hẹn hoặc nguồn. Không khẳng định đã
+kiểm tra xe/database. Triệu chứng không phải chẩn đoán chắc chắn. Không lặp câu hỏi làm
+rõ đã được trả lời và không đưa chủ đề cũ/cảnh báo không liên quan vào câu trả lời.
+Với câu hỏi triệu chứng, trước khi dùng một nguồn phải kiểm tra nguồn đó cùng bộ phận,
+hiện tượng và điều kiện xuất hiện với câu hiện tại. Một từ chung như “phanh”, “lốp” hoặc
+“kêu” không đủ chứng minh liên quan. Không biến bài về phanh lệch thành nguyên nhân của
+lốp mòn lệch, và không biến câu “tiếng kêu” thành câu hỏi “tiền/giá”. Chỉ nêu các khả
+năng trực tiếp nhất cần kiểm tra, không chép danh sách từ mọi nguồn truy xuất.
+Chỉ trả văn bản thuần. Không dùng Markdown, tiêu đề bắt đầu bằng #, dấu ** để in đậm,
+ký hiệu $$, code fence, bảng Markdown hoặc trang trí bằng ký tự đặc biệt. Có thể dùng
+dấu gạch đầu dòng đơn giản khi thật sự cần liệt kê.
+Trả lời tiếng Việt tự nhiên, trực tiếp và vừa đủ chi tiết."""
+
 # Prompt riêng cho dữ liệu thương mại đã được backend xác minh. Prompt này không
 # cấp quyền truy cập DB cho model; backend phải truy vấn, lọc quyền và đóng băng
 # snapshot trước khi gọi Ollama.
@@ -87,4 +109,5 @@ ROLE_GUIDANCE = {
 def conversation_prompt(role: str, task: str) -> str:
     """Role lấy từ phiên xác thực ở backend, không tin role do client gửi."""
     role_name = role if role in ROLE_GUIDANCE else "Khách hàng"
-    return f"{COMMON_CONVERSATION}\n\nVai trò hiện tại: {role_name}. {ROLE_GUIDANCE[role_name]}\n\n{task}"
+    return (f"{COMMON_CONVERSATION}\n\n{ANSWER_GENERATOR_PROMPT}\n\n"
+            f"Vai trò hiện tại: {role_name}. {ROLE_GUIDANCE[role_name]}\n\n{task}")

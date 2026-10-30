@@ -61,3 +61,18 @@ def test_empty_ollama_technical_reply_falls_back_locally(monkeypatch):
                    year_from=None, year_to=None, engine_code="", excerpts=[])
     result = AIService(api_key="", provider="ollama").answer_technical("Phanh kêu", [article], "Khách hàng")
     assert result.status == "fallback" and "Kiểm tra phanh" in result.content
+
+
+def test_technical_model_cannot_replace_symptom_answer_with_prices(monkeypatch):
+    monkeypatch.setattr("httpx.post", lambda *_, **__: SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {"message": {"content": "Giá bán má phanh là 1.190.000 ₫/bộ."}}))
+    article = dict(title="Tiếng ken két khi phanh", symptoms="phanh kêu ken két",
+                   content="Kiểm tra má phanh và đĩa phanh thực tế.", safety="",
+                   safety_level="low", source_name="Nguồn", document_version="",
+                   vehicle_make="", vehicle_model="", year_from=None, year_to=None,
+                   engine_code="", excerpts=[])
+    result = AIService(api_key="", provider="ollama").answer_technical(
+        "Đạp phanh nghe tiếng ken két thì cần kiểm tra gì?", [article], "Khách hàng")
+    assert result.status == "fallback"
+    assert "1.190.000" not in result.content and "Kiểm tra má phanh" in result.content

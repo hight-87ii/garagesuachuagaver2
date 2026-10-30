@@ -44,7 +44,8 @@ def summarize(messages: list[dict]) -> dict:
         if row["role"] == "assistant":
             context = message_meta(row).get("context", {})
             state.update({key: value for key, value in context.items()
-                          if key in ("topic", "product_ids", "pending", "price_snapshots")})
+                          if key in ("topic", "product_ids", "pending", "price_snapshots",
+                                     "active_topic", "active_entities")})
             if context.get("technical_context"):
                 state["technical_context"] = context["technical_context"]
         else:
@@ -96,14 +97,19 @@ def update_technical_context(previous: dict | None, text: str,
         context[key] = list(context.get(key) or [])
     normalized = AIService._normalize_vi(text)
 
-    symptom_aliases = (("lọc cọc", ("loc coc", "coc coc")),
+    symptom_aliases = (("đèn Check Engine", ("check engine", "den dong co", "den ca vang")),
+                       ("lọc cọc", ("loc coc", "coc coc")),
                        ("tiếng rít", ("rit", "ken ket", "nghien")),
                        ("rung/lắc", ("rung", "lac")),
                        ("lệch lái", ("lech lai", "keo ve", "nhao lai")))
-    for label, aliases in symptom_aliases:
-        if any(alias in normalized for alias in aliases):
-            context["symptom"] = context["symptom"] or label
-            break
+    detected = next((label for label, aliases in symptom_aliases
+                     if any(alias in normalized for alias in aliases)), "")
+    # Một triệu chứng được nêu rõ và khác triệu chứng trước là chủ đề kỹ thuật
+    # mới. Không mang vị trí/điều kiện của tiếng kêu sang đèn cảnh báo động cơ.
+    if detected and context.get("symptom") and context["symptom"] != detected:
+        context = empty_technical_context()
+    if detected:
+        context["symptom"] = detected
 
     triggers = (("khi phanh", ("phanh", "dap phanh", "danh phanh")),
                 ("khi đánh lái", ("danh lai", "quay vo lang")),
@@ -150,7 +156,11 @@ def update_technical_context(previous: dict | None, text: str,
             asked.append("vị trí")
         context["clarifications_asked"] = list(dict.fromkeys([*context["clarifications_asked"], *asked]))
 
-    if context["vehicle_location"] == "chưa rõ":
+    if context["symptom"] == "đèn Check Engine":
+        # Đây là câu hỏi độc lập đủ rõ để RAG/Ollama trả lời; bộ hỏi tiếp dành
+        # cho tiếng kêu không được chặn câu trả lời hiện tại.
+        next_question = ""
+    elif context["vehicle_location"] == "chưa rõ":
         next_question = "Bạn xác nhận giúp tiếng kêu phát ra phía trước hay phía sau xe?"
     elif not context["vehicle_location"]:
         next_question = "Bạn nghe tiếng kêu rõ hơn ở phía trước hay phía sau xe?"

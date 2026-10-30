@@ -175,6 +175,14 @@ def answer_invoice_question(db: sqlite3.Connection, user: dict, question: str) -
         return None
     if not _allowed(user, "invoice.view"):
         return {"content": DENIED, "status": "forbidden", "sources": [], "intent": "denied"}
+    text = _normalize(question)
+    if any(term in text for term in ("khach hang khac", "nguoi khac", "khach khac", "ai khac", "cua nguoi khac")):
+        if not _allowed(user, "invoice.view_all"):
+            return {
+                "content": "Bạn không có quyền truy cập thông tin hóa đơn của khách hàng khác. "
+                           "Vì lý do bảo mật và quyền riêng tư, tài khoản của bạn chỉ được phép tra cứu các hóa đơn thuộc sở hữu của mình.",
+                "status": "forbidden", "sources": [], "intent": "denied"
+            }
     intent = classify_invoice_question(db, question)
     if ((intent.wants_amount and not _allowed(user, "invoice.view_amount")) or
             (intent.wants_debt and not _allowed(user, "invoice.view_debt")) or

@@ -1078,6 +1078,145 @@ def migration_031(db) -> None:
     ])
 
 
+def migration_032(db) -> None:
+    """Hybrid part knowledge: technical text is searchable; live business fields stay in DB."""
+    add_columns(db, "parts", [
+        ("technical_description", "technical_description TEXT NOT NULL DEFAULT ''"),
+        ("technical_specs", "technical_specs TEXT NOT NULL DEFAULT ''"),
+        ("usage_instructions", "usage_instructions TEXT NOT NULL DEFAULT ''"),
+    ])
+    # SQLite cannot alter the source_type CHECK constraint in place.
+    for trigger in ("vectors_article_update", "vectors_article_delete",
+                    "vectors_chunk_update", "vectors_chunk_delete",
+                    "vectors_case_update", "vectors_case_delete"):
+        db.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    db.execute("ALTER TABLE knowledge_vectors RENAME TO knowledge_vectors_v1")
+    db.execute("""CREATE TABLE knowledge_vectors (
+        model TEXT NOT NULL, source_type TEXT NOT NULL
+            CHECK(source_type IN ('technical_chunk','repair_case','part_catalog')),
+        source_id INTEGER NOT NULL, content_hash TEXT NOT NULL,
+        dimensions INTEGER NOT NULL CHECK(dimensions > 0), embedding BLOB NOT NULL,
+        indexed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        PRIMARY KEY(model,source_type,source_id)
+    )""")
+    db.execute("""INSERT INTO knowledge_vectors(model,source_type,source_id,content_hash,
+        dimensions,embedding,indexed_at) SELECT model,source_type,source_id,content_hash,
+        dimensions,embedding,indexed_at FROM knowledge_vectors_v1""")
+    db.execute("DROP TABLE knowledge_vectors_v1")
+    db.execute("CREATE INDEX ix_knowledge_vectors_source ON knowledge_vectors(source_type,source_id)")
+    db.execute("""CREATE TABLE part_knowledge_documents (
+        part_id INTEGER PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
+        content TEXT NOT NULL, content_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    )""")
+    db.execute("""CREATE VIRTUAL TABLE part_knowledge_fts USING fts5(
+        content, content='part_knowledge_documents', content_rowid='part_id',
+        tokenize='unicode61 remove_diacritics 2')""")
+    db.execute("""CREATE TRIGGER part_knowledge_fts_insert AFTER INSERT ON part_knowledge_documents
+        BEGIN INSERT INTO part_knowledge_fts(rowid,content) VALUES(new.part_id,new.content); END""")
+    db.execute("""CREATE TRIGGER part_knowledge_fts_delete AFTER DELETE ON part_knowledge_documents
+        BEGIN INSERT INTO part_knowledge_fts(part_knowledge_fts,rowid,content)
+             VALUES('delete',old.part_id,old.content); END""")
+    db.execute("""CREATE TRIGGER part_knowledge_fts_update AFTER UPDATE ON part_knowledge_documents
+        BEGIN INSERT INTO part_knowledge_fts(part_knowledge_fts,rowid,content)
+             VALUES('delete',old.part_id,old.content);
+             INSERT INTO part_knowledge_fts(rowid,content) VALUES(new.part_id,new.content); END""")
+    db.execute("""CREATE TABLE part_knowledge_index_jobs (
+        part_id INTEGER PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
+        content_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','processing','completed','failed')),
+        attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    )""")
+    # Backfill lexical documents only; embeddings remain incremental pending jobs.
+    db.execute("""INSERT INTO part_knowledge_documents(part_id,content,content_hash)
+        SELECT id,
+          'Mã phụ tùng: '||code||'. Tên phụ tùng: '||name||
+          CASE WHEN trim(category)<>'' THEN '. Nhóm: '||category ELSE '' END||
+          CASE WHEN trim(technical_description)<>'' THEN '. Mô tả kỹ thuật: '||technical_description ELSE '' END||
+          CASE WHEN trim(technical_specs)<>'' THEN '. Thông số kỹ thuật: '||technical_specs ELSE '' END||
+          CASE WHEN trim(usage_instructions)<>'' THEN '. Hướng dẫn sử dụng: '||usage_instructions ELSE '' END||
+          CASE WHEN trim(usage_requirements)<>'' THEN '. Yêu cầu sử dụng: '||usage_requirements ELSE '' END,
+          lower(hex(randomblob(32)))
+        FROM parts WHERE active=1""")
+    db.execute("""INSERT INTO part_knowledge_index_jobs(part_id,content_hash,status)
+        SELECT part_id,content_hash,'pending' FROM part_knowledge_documents""")
+    db.execute("""CREATE TRIGGER vectors_article_update AFTER UPDATE ON technical_articles
+        BEGIN DELETE FROM knowledge_vectors WHERE source_type='technical_chunk' AND source_id IN
+            (SELECT id FROM technical_chunks WHERE article_id=old.id); END""")
+    db.execute("""CREATE TRIGGER vectors_article_delete BEFORE DELETE ON technical_articles
+        BEGIN DELETE FROM knowledge_vectors WHERE source_type='technical_chunk' AND source_id IN
+            (SELECT id FROM technical_chunks WHERE article_id=old.id); END""")
+    for event in ("UPDATE", "DELETE"):
+        db.execute(f"""CREATE TRIGGER vectors_chunk_{event.lower()} BEFORE {event} ON technical_chunks
+            BEGIN DELETE FROM knowledge_vectors WHERE source_type='technical_chunk' AND source_id=old.id; END""")
+        db.execute(f"""CREATE TRIGGER vectors_case_{event.lower()} BEFORE {event} ON repair_knowledge_cases
+            BEGIN DELETE FROM knowledge_vectors WHERE source_type='repair_case' AND source_id=old.id; END""")
+    db.execute("""CREATE TRIGGER vectors_part_deactivate AFTER UPDATE OF active ON parts
+        WHEN new.active=0 BEGIN
+          DELETE FROM knowledge_vectors WHERE source_type='part_catalog' AND source_id=new.id;
+          DELETE FROM part_knowledge_documents WHERE part_id=new.id;
+          DELETE FROM part_knowledge_index_jobs WHERE part_id=new.id;
+        END""")
+    db.execute("""CREATE TRIGGER vectors_part_technical_update AFTER UPDATE OF
+        code,name,category,technical_description,technical_specs,usage_instructions,usage_requirements
+        ON parts WHEN old.code IS NOT new.code OR old.name IS NOT new.name OR
+          old.category IS NOT new.category OR old.technical_description IS NOT new.technical_description OR
+          old.technical_specs IS NOT new.technical_specs OR
+          old.usage_instructions IS NOT new.usage_instructions OR
+          old.usage_requirements IS NOT new.usage_requirements BEGIN
+          DELETE FROM knowledge_vectors WHERE source_type='part_catalog' AND source_id=new.id;
+        END""")
+    db.execute("""CREATE TRIGGER vectors_part_delete BEFORE DELETE ON parts BEGIN
+          DELETE FROM knowledge_vectors WHERE source_type='part_catalog' AND source_id=old.id;
+          DELETE FROM part_knowledge_documents WHERE part_id=old.id;
+          DELETE FROM part_knowledge_index_jobs WHERE part_id=old.id;
+        END""")
+
+
+def migration_033(db) -> None:
+    """Chu kỳ bảo dưỡng có cấu trúc; chỉ bản ghi approved gắn bài published mới dùng."""
+    db.execute("""CREATE TABLE IF NOT EXISTS maintenance_intervals (
+        id INTEGER PRIMARY KEY,
+        service_type TEXT NOT NULL DEFAULT 'engine_oil'
+            CHECK(service_type IN ('engine_oil')),
+        vehicle_make TEXT NOT NULL,
+        vehicle_model TEXT NOT NULL,
+        year_from INTEGER CHECK(year_from IS NULL OR year_from BETWEEN 1950 AND 2100),
+        year_to INTEGER CHECK(year_to IS NULL OR year_to BETWEEN 1950 AND 2100),
+        engine_code TEXT NOT NULL DEFAULT '',
+        market TEXT NOT NULL DEFAULT '',
+        interval_km INTEGER CHECK(interval_km IS NULL OR interval_km > 0),
+        interval_months INTEGER CHECK(interval_months IS NULL OR interval_months > 0),
+        severe_interval_km INTEGER CHECK(severe_interval_km IS NULL OR severe_interval_km > 0),
+        severe_interval_months INTEGER
+            CHECK(severe_interval_months IS NULL OR severe_interval_months > 0),
+        conditions_note TEXT NOT NULL DEFAULT '',
+        oil_spec TEXT NOT NULL DEFAULT '',
+        source_name TEXT NOT NULL,
+        source_url TEXT NOT NULL DEFAULT '',
+        document_version TEXT NOT NULL DEFAULT '',
+        article_id INTEGER REFERENCES technical_articles(id) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','approved','retired')),
+        approved_by INTEGER REFERENCES users(id),
+        approved_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        UNIQUE(service_type,vehicle_make,vehicle_model,year_from,year_to,engine_code,market)
+    )""")
+    db.execute("""CREATE INDEX IF NOT EXISTS ix_maintenance_intervals_lookup
+        ON maintenance_intervals(status,service_type,vehicle_make,vehicle_model,
+                                 year_from,year_to,engine_code)""")
+
+
+def migration_034(db) -> None:
+    """Bổ sung danh mục phụ tùng chuẩn và bảng tra cứu fitment chi tiết cho các dòng xe phổ biến."""
+    from .popular_vehicle_fitments import seed_popular_vehicle_fitments
+
+    seed_popular_vehicle_fitments(db)
+
+
 MIGRATIONS = [
     (1, "001_initial_schema", migration_001),
     (2, "002_upgrade_legacy_core", migration_002),
@@ -1110,6 +1249,9 @@ MIGRATIONS = [
     (29, "029_repair_demo_vehicle_history", migration_029),
     (30, "030_vehicle_engine_number", migration_030),
     (31, "031_part_data_notes", migration_031),
+    (32, "032_hybrid_part_knowledge", migration_032),
+    (33, "033_maintenance_intervals", migration_033),
+    (34, "034_popular_vehicle_part_fitments", migration_034),
 ]
 
 

@@ -10,3 +10,6 @@ __pycache__/
 *.tsbuildinfo
 .agents/
 .opencode/
+
+anti-gravity-quota/
+scratch/

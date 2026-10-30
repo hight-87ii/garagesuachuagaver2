@@ -50,7 +50,9 @@ def _normalize(value: str) -> str:
 
 def is_customer_vehicle_question(question: str) -> bool:
     text = _normalize(question)
-    vehicle_words = any(term in text for term in (" xe", "xe ", "bien so", "phuong tien"))
+    if any(term in text for term in ("hoa don", "thanh toan", "cong no", "chua tra", "phai thu", "da thu")):
+        return False
+    vehicle_words = bool(re.search(r"\b(?:xe|bien so|phuong tien)\b", text))
     relation_words = any(term in text for term in (
         "khach hang", "khach nao", "chu xe", "thuoc khach", "so huu", "dang ky",
         "bao nhieu xe", "nhieu xe", "xe nao", "nhung xe", "chua co lich su sua",
@@ -323,11 +325,15 @@ def answer_customer_vehicle_question(db: sqlite3.Connection, question: str, user
     if not is_customer_vehicle_question(question):
         return None
     text = _normalize(question)
+    scope = customer_scope_id(db, user)
+    if any(ind in text for ind in ("khach hang khac", "nguoi khac", "khach khac", "ai khac")):
+        if scope is not None or not has_permission(str(user.get("role") or ""), "customer.view_all"):
+            return AIResult("Bạn không có quyền xem thông tin của khách hàng khác. Vì lý do bảo mật và quyền riêng tư, bạn chỉ được phép tra cứu hồ sơ xe thuộc sở hữu của mình.",
+                            "forbidden", "local", ai_service.model), []
     if "chi nhanh" in text:
         return AIResult("Hệ thống hiện chưa lưu chi nhánh cho khách hàng hoặc xe nên không thể lọc chính xác theo chi nhánh.",
                         "clarification", "local", ai_service.model, True, ["Chi nhánh"]), []
     filters = classify_customer_vehicle_question(db, question)
-    scope = customer_scope_id(db, user)
     if not _permissions_ok(user, filters, scope):
         return AIResult(DENIED, "fallback", "local", ai_service.model), []
     constrained = any((filters.count_operator, filters.maximum_count, filters.customer_id,

@@ -2,7 +2,7 @@
 
 import pytest
 
-from backend.ai_service import AIResult, ai_service
+from backend.ai_service import AIResult, ai_service, sanitize_chat_output
 from backend.tests.test_conversations import API, chat_env, conversation, headers, say
 
 
@@ -184,6 +184,22 @@ def test_technical_state_handles_partial_answer_and_conflict():
     assert any("mâu thuẫn vị trí" in fact for fact in conflict["known_facts"])
 
 
+def test_check_engine_starts_new_technical_topic(chat_env, monkeypatch):
+    """Không mang câu hỏi tiếng kêu/phanh sang câu Check Engine mới."""
+    client, _ = chat_env
+    auth = headers(client)
+    monkeypatch.setattr(ai_service, "_chat", lambda *a:
+                        "Đèn Check Engine vàng cần được đọc mã lỗi OBD sớm; nếu đèn nhấp nháy hoặc xe rung giật, hãy dừng xe an toàn.")
+    conv = conversation(client, auth, None, "check-engine-topic-switch")
+    say(client, auth, conv, "Xe có tiếng lọc cọc khi phanh phía sau.", "noise-topic-1")
+    result = say(client, auth, conv,
+                 "Đèn Check Engine sáng màu vàng thì nên làm gì?", "engine-topic-2")["result"]
+    normalized = ai_service._normalize_vi(result["result"])
+    assert "check engine" in normalized or "den dong co" in normalized
+    assert "tieng keu ro hon luc dap phanh" not in normalized
+    assert "phia sau" not in normalized
+
+
 def test_maintenance_interval_uses_verified_history_and_rag_not_service_price(chat_env, monkeypatch):
     from backend import database
     from backend.maintenance_interval import build_maintenance_context
@@ -222,3 +238,182 @@ def test_oil_service_price_stays_in_service_price_intent(chat_env):
                          json={"question": "Thay dầu động cơ hết bao nhiêu tiền?"}).json()
     assert any(source["type"] == "service" for source in result["sources"])
     assert "thời lượng" in result["result"]
+
+
+def test_clear_topic_switch_check_engine_to_tire_size_in_both_apis(chat_env, monkeypatch):
+    client, _ = chat_env
+    auth = headers(client)
+
+    def model(messages):
+        payload = messages[-1].get("content", "")
+        if '"tire_context"' in payload:
+            return "205 là bề rộng danh nghĩa, 55 là tỷ lệ chiều cao, R là radial và 16 là đường kính vành."
+        if "Check Engine" in payload:
+            return "Đèn Check Engine cần được kiểm tra bằng thiết bị; chưa thể kết luận nguyên nhân."
+        return "{}"
+
+    monkeypatch.setattr(ai_service, "_chat", model)
+    first_question = "Đèn Check Engine sáng màu vàng thì làm gì?"
+    second_question = "Lốp 205/55R16 có ý nghĩa gì?"
+    old = client.post(f"{API}/ai/assistant/chat", headers=auth,
+                      json={"question": first_question}).json()
+    follow = client.post(f"{API}/ai/assistant/chat", headers=auth, json={
+        "question": second_question,
+        "history": [{"role": "user", "text": first_question},
+                    {"role": "assistant", "text": old["result"]}],
+    }).json()
+    conv = conversation(client, auth, None, "topic-tire-size")
+    say(client, auth, conv, first_question, "topic-tire-size-1")
+    persistent = say(client, auth, conv, second_question, "topic-tire-size-2")["result"]
+    for result in (follow, persistent):
+        assert "205" in result["result"] and "Check Engine" not in result["result"]
+        assert all(source.get("type") != "part" for source in result["sources"])
+
+
+def test_tire_reference_uses_previous_size_but_never_claims_fitment(chat_env, monkeypatch):
+    client, _ = chat_env
+    auth = headers(client)
+    monkeypatch.setattr(ai_service, "_chat", lambda messages:
+        "205 là bề rộng, 55 là tỷ lệ thành lốp, R là radial, 16 là cỡ vành.")
+    first_question = "Lốp 205/55R16 có ý nghĩa gì?"
+    reference = "Loại này có lắp vừa xe tôi không?"
+    first = client.post(f"{API}/ai/assistant/chat", headers=auth,
+                        json={"question": first_question}).json()
+    legacy = client.post(f"{API}/ai/assistant/chat", headers=auth, json={
+        "question": reference, "history": [
+            {"role": "user", "text": first_question},
+            {"role": "assistant", "text": first["result"]},
+        ]}).json()
+    conv = conversation(client, auth, None, "tire-reference-fitment")
+    say(client, auth, conv, first_question, "tire-reference-1")
+    persistent = say(client, auth, conv, reference, "tire-reference-2")["result"]
+    for result in (legacy, persistent):
+        assert "205/55R16" in result["result"]
+        assert "chưa thể xác nhận" in result["result"].casefold()
+        assert result["source_count"] == 0
+
+
+def test_rag_relevance_rejects_brake_article_for_tire_size():
+    from backend.technical_knowledge import filter_relevant_technical
+    articles = [
+        {"id": 1, "title": "Phanh rung", "symptoms": "Rung khi phanh",
+         "content": "Kiểm tra đĩa phanh", "excerpts": []},
+        {"id": 2, "title": "Thông số kích thước lốp", "symptoms": "",
+         "content": "Bề rộng, tỷ lệ thành lốp radial và đường kính vành", "excerpts": []},
+    ]
+    result = filter_relevant_technical(articles, "tire_size", "Lốp 205/55R16 có ý nghĩa gì?")
+    assert [article["id"] for article in result] == [2]
+
+
+def test_automotive_question_uses_ollama_when_garage_has_no_rag(chat_env, monkeypatch):
+    client, _ = chat_env
+    auth = headers(client)
+    monkeypatch.setattr(ai_service, "analyze_chat_question", lambda *a: {
+        "intent": "technical_explanation", "topic": "cvt", "needs_database": False,
+        "needs_rag": True, "needs_general_knowledge": True, "entities": {},
+        "search_query": "hộp số CVT hoạt động", "clarification_question": None,
+    })
+    monkeypatch.setattr("backend.api.v1.ai._technical_references", lambda *a, **kw: ([], []))
+    monkeypatch.setattr(ai_service, "_chat", lambda *a:
+                        "Hộp số CVT thay đổi tỷ số truyền liên tục bằng hệ puly và dây đai.")
+    result = client.post(f"{API}/ai/assistant/chat", headers=auth,
+                         json={"question": "Hộp số CVT hoạt động thế nào?"}).json()
+    assert result["status"] == "success"
+    assert "CVT" in result["result"] and result["source_count"] == 0
+    assert "kiến thức tham khảo" in result["result"]
+
+
+def test_broken_rag_falls_back_to_ollama_for_automotive_knowledge(chat_env, monkeypatch):
+    client, _ = chat_env
+    auth = headers(client)
+    monkeypatch.setattr(ai_service, "analyze_chat_question", lambda *a: None)
+    monkeypatch.setattr("backend.api.v1.ai._technical_references",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("index down")))
+    monkeypatch.setattr(ai_service, "_chat", lambda *a:
+                        "Turbo lag là độ trễ trước khi bộ tăng áp tạo đủ áp suất.")
+    result = client.post(f"{API}/ai/assistant/chat", headers=auth,
+                         json={"question": "Turbo lag là gì?"}).json()
+    assert result["status"] == "success" and "Turbo lag" in result["result"]
+
+
+def test_out_of_scope_question_is_not_answered_by_ollama_in_both_apis(chat_env, monkeypatch):
+    client, _ = chat_env
+    auth = headers(client)
+    monkeypatch.setattr(ai_service, "analyze_chat_question", lambda *a: None)
+    monkeypatch.setattr(ai_service, "_chat", lambda *a: pytest.fail("Không sinh nội dung ngoài phạm vi"))
+    question = "Cách nấu phở bò như thế nào?"
+    legacy = client.post(f"{API}/ai/assistant/chat", headers=auth,
+                         json={"question": question}).json()
+    conv = conversation(client, auth, None, "out-of-scope-chat")
+    persistent = say(client, auth, conv, question, "out-of-scope-1")["result"]
+    for result in (legacy, persistent):
+        assert result["status"] == "out_of_scope"
+        assert "chỉ hỗ trợ" in result["result"]
+        assert result["source_count"] == 0
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("Đạp phanh nghe tiếng ken két thì cần kiểm tra gì?", "ken két"),
+    ("Xe có tiếng lọc cọc khi đi đường bằng, phía sau, rõ hơn khi phanh.", "lọc cọc"),
+])
+def test_brake_noise_routes_to_technical_not_demo_prices_in_both_apis(
+        chat_env, monkeypatch, question, expected):
+    client, _ = chat_env
+    auth = headers(client)
+    monkeypatch.setenv("CATALOG_MODE", "demo")
+    monkeypatch.setattr(ai_service, "analyze_chat_question", lambda *a: {
+        "intent": "technical_symptom", "topic": "brake", "entities": {},
+        "needs_database": False, "needs_rag": True, "needs_general_knowledge": True,
+        "search_query": question, "clarification_question": None,
+    })
+    article = {"id": 901, "title": f"Kiểm tra tiếng {expected}",
+               "symptoms": question, "content": "Cần kiểm tra thực tế.", "excerpts": []}
+    monkeypatch.setattr("backend.api.v1.ai._technical_references", lambda *a, **kw:
+                        ([article], [{"type": "technical_article", "id": 901,
+                                      "label": "Bài kỹ thuật đúng triệu chứng"}]))
+    monkeypatch.setattr(ai_service, "answer_technical", lambda *a: AIResult(
+        f"Tiếng {expected} là triệu chứng kỹ thuật; cần kiểm tra đúng vị trí và điều kiện xuất hiện.",
+        "success", "local", ai_service.model))
+    legacy = client.post(f"{API}/ai/assistant/chat", headers=auth,
+                         json={"question": question}).json()
+    conv = conversation(client, auth, None, "noise-route-" + str(len(question)))
+    persistent = say(client, auth, conv, question, "noise-route-request")["result"]
+    for result in (legacy, persistent):
+        assert expected in result["result"]
+        assert "₫" not in result["result"] and "Giá dưới đây" not in result["result"]
+        assert [(source["type"], source["id"]) for source in result["sources"]] == [
+            ("technical_article", 901)]
+
+
+def test_tire_wear_filter_rejects_brake_article_that_only_mentions_tires():
+    from backend.technical_knowledge import filter_relevant_technical
+    brake = {"id": 1, "title": "Xe lệch khi phanh", "symptoms": "phanh không đều",
+             "content": "Kiểm tra áp suất lốp, má phanh và đĩa phanh.", "excerpts": []}
+    tire = {"id": 2, "title": "Lốp mòn lệch một bên", "symptoms": "lốp mòn không đều",
+            "content": "Kiểm tra góc đặt bánh và hệ thống treo.", "excerpts": []}
+    result = filter_relevant_technical([brake, tire], "tire_wear",
+                                       "Lốp xe mòn lệch một bên có thể do đâu?")
+    assert [article["id"] for article in result] == [2]
+
+
+def test_chat_output_removes_markdown_decoration_in_both_apis(chat_env, monkeypatch):
+    assert sanitize_chat_output("## **Kiểm tra phanh**\n$$Không tự kết luận$$\n`OBD`") == (
+        "Kiểm tra phanh\nKhông tự kết luận\nOBD")
+    client, _ = chat_env
+    auth = headers(client)
+    monkeypatch.setattr(ai_service, "analyze_chat_question", lambda *a: {
+        "intent": "technical_explanation", "topic": "cvt", "entities": {},
+        "needs_database": False, "needs_rag": True, "needs_general_knowledge": True,
+        "search_query": "CVT", "clarification_question": None,
+    })
+    monkeypatch.setattr("backend.api.v1.ai._technical_references", lambda *a, **kw: ([], []))
+    monkeypatch.setattr(ai_service, "_chat", lambda *a:
+                        "## **Hộp số CVT**\n$$Thay đổi tỷ số truyền liên tục.$$\n`Cần bảo dưỡng đúng loại dầu.`")
+    question = "Hộp số CVT hoạt động thế nào?"
+    legacy = client.post(f"{API}/ai/assistant/chat", headers=auth,
+                         json={"question": question}).json()
+    conv = conversation(client, auth, None, "plain-text-answer")
+    persistent = say(client, auth, conv, question, "plain-text-answer-1")["result"]
+    for result in (legacy, persistent):
+        assert "Hộp số CVT" in result["result"]
+        assert all(marker not in result["result"] for marker in ("**", "##", "$$", "`"))
